@@ -63,6 +63,11 @@ from mava.utils.network_utils import get_action_head
 from mava.utils.total_timestep_checker import check_total_timesteps
 from mava.wrappers import episode_metrics
 
+# General shape comment guideline:
+# B: batch size
+# N: num agents
+# A: action dim
+
 
 # It is faster to do this with a vmap, but unfortunately that requires switching to numpyro.
 # This requires a lot of testing so there is currently an issue for it: #1098
@@ -160,6 +165,7 @@ def init(
     q_network = QNetwork(critic_torso, centralised_critic=True)
     q1_params = q_network.init(q1_key, obs_single_batched, concat_acts_batched)
     q2_params = q_network.init(q2_key, obs_single_batched, concat_acts_batched)
+    # obs_single_batched contains the global state which the QNetwork's condition on
     q1_target_params = q_network.init(q1_target_key, obs_single_batched, concat_acts_batched)
     q2_target_params = q_network.init(q2_target_key, obs_single_batched, concat_acts_batched)
 
@@ -388,15 +394,19 @@ def make_update_fns(
             else:
                 agent_ids = jnp.arange(env.num_agents)
 
+            # Joint actions and log probs per agent. 
+            # These will be sequentially updated after each agent's grad step.
             joint_actions, log_probs = get_actions(
                 params.actor, actor_net, act_keys, env.num_agents, env.action_dim, data.obs
-            )
+            )  # (B, N, A), (B, N)
 
             # HASAC sequential update: run the normal actor update one at a time instead of batched.
-            # Update the joint actions after updating the actor and use the new joint actions.
+            # Update the joint actions after updating the actor and use the new joint actions
+            # in subsequent updates.
             for agent_id in agent_ids:
                 key, actor_key = jax.random.split(key)
 
+                # Select current agent's params/opt/obs: (N, ...) -> (...)
                 agent_params = tree_slice(params.actor, agent_id)
                 agent_opt_state = tree_slice(opt_states.actor, agent_id)
                 agent_obs = tree_slice(data.obs, jnp.s_[:, agent_id])
@@ -423,7 +433,7 @@ def make_update_fns(
 
                 # Add new action to list of actions
                 joint_actions = joint_actions.at[:, agent_id].set(new_action)
-
+                # Update global params and opt states
                 all_actor_params = tree_at_set(params.actor, agent_id, new_agent_params)
                 all_opt_states = tree_at_set(opt_states.actor, agent_id, new_agent_opt_state)
                 params = params._replace(actor=all_actor_params)
@@ -432,7 +442,7 @@ def make_update_fns(
                 # Update alpha if autotuning
                 alpha_loss = 0.0  # loss is 0 if autotune is off
                 if cfg.system.autotune:
-                    alpha_opt_state = tree_slice(opt_states.alpha, agent_id)
+                    alpha_opt_state = tree_slice(opt_states.alpha, agent_id)  # (N, ...) -> (...)
 
                     alpha_loss, grads = alpha_grad_fn(
                         params.log_alpha[:, agent_id],
@@ -443,7 +453,7 @@ def make_update_fns(
                     alpha_loss, grads = lax.pmean((alpha_loss, grads), axis_name="batch")
                     updates, new_alpha_opt_state = alpha_opt.update(grads, alpha_opt_state)
                     new_log_alpha = optax.apply_updates(params.log_alpha[:, agent_id], updates)
-
+                    # Update global params/opt states
                     new_log_alphas = tree_at_set(params.log_alpha, agent_id, new_log_alpha)
                     new_alpha_opt_states = tree_at_set(
                         opt_states.alpha, agent_id, new_alpha_opt_state
@@ -463,7 +473,7 @@ def make_update_fns(
         key, buff_key, q_key, actor_key = jax.random.split(key, 4)
 
         # sample
-        data = rb.sample(buffer_state, buff_key).experience
+        data = rb.sample(buffer_state, buff_key).experience  # (B, N, ...)
 
         # learn
         params, opt_states, q_loss_info = update_q(params, opt_states, data, q_key)
