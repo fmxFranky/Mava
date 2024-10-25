@@ -9,7 +9,7 @@ include=['mava*']
 name="id-mava"
 authors=[{name="InstaDeep Ltd"}]
 dynamic=["version", "dependencies", "optional-dependencies"]
-license={file="LISCENSE"}
+license={file="LICENSE"}
 description="Distributed Multi-Agent Reinforcement Learning in JAX."
 readme ="README.md"
 requires-python=">=3.9"  # would be nice to upgrade this and jumanji at some point
