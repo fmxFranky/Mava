@@ -2,7 +2,7 @@
 total_timesteps: ~ # Set the total environment steps.
 # If unspecified, it's derived from num_updates; otherwise, num_updates adjusts based on this value.
 num_updates: 10000 # Number of updates.
-seed: 1
+seed: 42
 
 # --- Agent observations ---
 add_agent_id: True
