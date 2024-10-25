@@ -665,7 +665,7 @@ def run_experiment(cfg: DictConfig) -> float:
 
     logger.stop()
 
-    return float(eval_performance)
+    return eval_performance
 
 
 @hydra.main(
@@ -679,11 +679,11 @@ def hydra_entry_point(cfg: DictConfig) -> float:
     OmegaConf.set_struct(cfg, False)
     cfg.logger.system_name = "rec_qmix"
     # Run experiment.
-    final_return = run_experiment(cfg)
+    eval_performance = run_experiment(cfg)
 
     print(f"{Fore.CYAN}{Style.BRIGHT}QMIX experiment completed{Style.RESET_ALL}")
 
-    return float(final_return)
+    return eval_performance
 
 
 if __name__ == "__main__":
