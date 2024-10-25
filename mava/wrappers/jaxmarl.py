@@ -439,11 +439,11 @@ class MPEWrapper(JaxMarlWrapper):
         obs, _ = self._env.reset(jax.random.PRNGKey(0))
         return obs["agent_0"].shape[0] * self.num_agents
 
-    def action_mask(self, wrapped_env_state: BraxState) -> Array:
+    def action_mask(self, wrapped_env_state: Any) -> Array:
         """Get action mask for each agent."""
         return jnp.ones((self.num_agents, self.action_dim), dtype=bool)
 
-    def get_global_state(self, wrapped_env_state: BraxState, obs: Dict[str, Array]) -> Array:
+    def get_global_state(self, wrapped_env_state: Any, obs: Dict[str, Array]) -> Array:
         """Get global state from observation and copy it for each agent."""
         all_obs = jnp.array([obs[agent] for agent in self._env.agents]).flatten()
         return jnp.tile(all_obs, (self.num_agents, 1))
