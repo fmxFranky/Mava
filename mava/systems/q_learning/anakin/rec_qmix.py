@@ -373,11 +373,11 @@ def make_update_fns(
         """Update the Q parameters."""
 
         # Get data aligned with current/next timestep
-        data_first = tree.map(lambda x: x[:, :-1, ...], data)  # (B, T, ...)
-        data_next = tree.map(lambda x: x[:, 1:, ...], data)  # (B, T, ...)
+        data_t0 = tree.map(lambda x: x[:, :-1, ...], data)  # (B, T, ...)
+        data_t1 = tree.map(lambda x: x[:, 1:, ...], data)  # (B, T, ...)
 
-        first_reward = data_first.reward
-        next_done = data_next.term_or_trunc
+        reward_t0 = data_t0.reward
+        next_done = data_t1.term_or_trunc
 
         # Get the greedy action using the distribution.
         # Epsilon defaults to 0.
@@ -405,21 +405,21 @@ def make_update_fns(
         )
 
         next_q_val = mixer.apply(
-            params.mixer_target, next_q_val, data_next.obs.global_state[:, :, 0, ...]
+            params.mixer_target, next_q_val, data_t1.obs.global_state[:, :, 0, ...]
         )  # B,T,A,... -> B,T,1,...
 
         # TD Target
-        target_q_val = first_reward + (1.0 - next_done) * cfg.system.gamma * next_q_val
+        target_q_val = reward_t0 + (1.0 - next_done) * cfg.system.gamma * next_q_val
 
         q_grad_fn = jax.grad(q_loss_fn, has_aux=True)
         q_grads, q_loss_info = q_grad_fn(
             (params.online, params.mixer_online),
-            data_first.obs,
-            data_first.term_or_trunc,
-            data_first.action,
+            data_t0.obs,
+            data_t0.term_or_trunc,
+            data_t0.action,
             target_q_val,
         )
-        q_loss_info["mean_first_reward"] = jnp.mean(first_reward)
+        q_loss_info["mean_reward_t0"] = jnp.mean(reward_t0)
         q_loss_info["mean_next_qval"] = jnp.mean(next_q_val)
         q_loss_info["done"] = jnp.mean(data.term_or_trunc)
 
