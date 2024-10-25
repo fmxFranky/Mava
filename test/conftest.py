@@ -37,7 +37,7 @@ def fast_config() -> Dict[str, Dict[str, bool | int | float]]:
             # iql
             "min_buffer_size": 4,
             "sample_batch_size": 1,
-            "sample_sequence_length": 1,
+            "sample_sequence_length": 2,
         },
         "arch": {
             "num_envs": 1,
