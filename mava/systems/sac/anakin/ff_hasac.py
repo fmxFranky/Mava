@@ -394,7 +394,7 @@ def make_update_fns(
             else:
                 agent_ids = jnp.arange(env.num_agents)
 
-            # Joint actions and log probs per agent. 
+            # Joint actions and log probs per agent.
             # These will be sequentially updated after each agent's grad step.
             joint_actions, log_probs = get_actions(
                 params.actor, actor_net, act_keys, env.num_agents, env.action_dim, data.obs
