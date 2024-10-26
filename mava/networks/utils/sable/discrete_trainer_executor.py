@@ -20,8 +20,6 @@ import jax
 import jax.numpy as jnp
 from flax import linen as nn
 
-from mava.systems.sable.types import HiddenStates
-
 
 def train_encoder_parallel(
     encoder: nn.Module,
