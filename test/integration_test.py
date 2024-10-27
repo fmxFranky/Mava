@@ -19,6 +19,8 @@ import pytest
 from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
 
+from test.utils import find_replace
+
 # This integration test is not exhaustive, that would be too expensive. This means that not all
 # system run all envs, but each env and each system is run at least once.
 # For each system we select a random environment to run.
@@ -54,14 +56,11 @@ def _run_system(system_name: str, cfg: DictConfig) -> float:
     return float(eval_perf)
 
 
-def _get_fast_config(cfg: DictConfig, fast_config: dict) -> DictConfig:
+def _get_fast_config(cfg: DictConfig, config_modifications: dict) -> DictConfig:
     """Makes the configs use a minimum number of timesteps and evaluations."""
-    dconf: dict = OmegaConf.to_container(cfg, resolve=True)
-    dconf["system"] |= fast_config["system"]
-    dconf["arch"] |= fast_config["arch"]
-    cfg = OmegaConf.create(dconf)
-
-    return cfg
+    return OmegaConf.create(
+        find_replace(OmegaConf.to_container(cfg, resolve=True), config_modifications)
+    )
 
 
 @pytest.mark.parametrize("system_path", ppo_systems)
@@ -153,7 +152,7 @@ def test_continuous_env(fast_config: dict, env_name: str) -> None:
     system_path = random.choice(ppo_systems + sac_systems)
     _, _, system_name = system_path.split(".")
 
-    overrides = [f"env={env_name}", "network=continuous_mlp"]
+    overrides = [f"env={env_name}"]
     with initialize(version_base=None, config_path=config_path):
         cfg = compose(config_name=f"{system_name}", overrides=overrides)
         cfg = _get_fast_config(cfg, fast_config)
