@@ -33,6 +33,7 @@ ppo_systems = [
 ]
 q_learning_systems = ["q_learning.anakin.rec_iql"]
 sac_systems = ["sac.anakin.ff_isac", "sac.anakin.ff_masac"]
+sable_systems = ["sable.anakin.ff_sable", "sable.anakin.rec_sable"]
 
 discrete_envs = ["gigastep", "lbf", "matrax", "rware", "smax"]
 cnn_envs = ["cleaner", "connector"]
@@ -76,6 +77,19 @@ def test_ppo_system(fast_config: dict, system_path: str) -> None:
     _run_system(system_path, cfg)
 
 
+@pytest.mark.parametrize("system_path", sable_systems)
+def test_sable_system(fast_config: dict, system_path: str) -> None:
+    """Test all sable systems on random envs."""
+    _, _, system_name = system_path.split(".")
+    env = random.choice(discrete_envs)
+
+    with initialize(version_base=None, config_path=config_path):
+        cfg = compose(config_name=f"{system_name}", overrides=[f"env={env}"])
+        cfg = _get_fast_config(cfg, fast_config)
+
+    _run_system(system_path, cfg)
+
+
 @pytest.mark.parametrize("system_path", q_learning_systems)
 def test_q_learning_system(fast_config: dict, system_path: str) -> None:
     """Test all Q-Learning systems on random envs."""
@@ -105,7 +119,7 @@ def test_sac_system(fast_config: dict, system_path: str) -> None:
 @pytest.mark.parametrize("env_name", discrete_envs)
 def test_discrete_env(fast_config: dict, env_name: str) -> None:
     """Test all discrete envs on random systems."""
-    system_path = random.choice(ppo_systems + q_learning_systems)
+    system_path = random.choice(ppo_systems + q_learning_systems + sable_systems)
     _, _, system_name = system_path.split(".")
 
     with initialize(version_base=None, config_path=config_path):
