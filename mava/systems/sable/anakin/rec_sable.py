@@ -206,7 +206,7 @@ def get_learner_fn(
                 ) -> Tuple:
                     """Calculate Sable loss."""
                     # RERUN NETWORK
-                    log_prob, value, entropy = sable_apply_fn(  # type: ignore
+                    value, log_prob, entropy = sable_apply_fn(  # type: ignore
                         params,
                         traj_batch.obs,
                         traj_batch.action,
@@ -584,7 +584,7 @@ def run_experiment(_config: DictConfig) -> float:
     # Create an initial hidden state used for resetting memory for evaluation
     eval_batch_size = get_num_eval_envs(config, absolute_metric=False)
     eval_hs = get_init_hidden_state(config.network, eval_batch_size)
-    eval_hs = tree.map(lambda x: x[jnp.newaxis], eval_hs)
+    eval_hs = flax.jax_utils.replicate(eval_hs, devices=jax.devices())
 
     # Run experiment for a total number of evaluations.
     max_episode_return = -jnp.inf

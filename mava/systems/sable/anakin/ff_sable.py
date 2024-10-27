@@ -191,7 +191,7 @@ def get_learner_fn(
                 ) -> Tuple:
                     """Calculate Sable loss."""
                     # RERUN NETWORK
-                    log_prob, value, entropy = sable_apply_fn(  # type: ignore
+                    value, log_prob, entropy = sable_apply_fn(  # type: ignore
                         params,
                         obs_carry=traj_batch.obs,
                         action=traj_batch.action,
