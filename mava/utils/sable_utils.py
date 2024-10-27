@@ -58,7 +58,7 @@ def concat_time_and_agents(x: chex.Array) -> chex.Array:
 
     Args:
     ----
-        x: Input tensor of shape (Batch, Agents, Time, ...).
+        x: Input tensor of shape (Time, Batch, Agents, ...).
 
     Returns:
     -------

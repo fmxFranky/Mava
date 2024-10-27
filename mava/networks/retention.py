@@ -35,18 +35,18 @@ class SimpleRetention(nn.Module):
 
     def setup(self) -> None:
         # Initialize the weights
-        self.W_Q = self.param(
-            "W_Q",
+        self.w_q = self.param(
+            "w_q",
             nn.initializers.normal(stddev=1 / self.embed_dim),
             (self.embed_dim, self.head_size),
         )
-        self.W_K = self.param(
-            "W_K",
+        self.w_k = self.param(
+            "w_k",
             nn.initializers.normal(stddev=1 / self.embed_dim),
             (self.embed_dim, self.head_size),
         )
-        self.W_V = self.param(
-            "W_V",
+        self.w_v = self.param(
+            "w_v",
             nn.initializers.normal(stddev=1 / self.embed_dim),
             (self.embed_dim, self.head_size),
         )
@@ -58,9 +58,9 @@ class SimpleRetention(nn.Module):
         batch, chunk_size, _ = value.shape
 
         # Apply projection to q_proj, k_proj, v_proj
-        q_proj = query @ self.W_Q
-        k_proj = key @ self.W_K
-        v_proj = value @ self.W_V
+        q_proj = query @ self.w_q
+        k_proj = key @ self.w_k
+        v_proj = value @ self.w_v
         k_proj = k_proj.transpose(0, -1, -2)
 
         # Compute next hidden state
@@ -90,9 +90,9 @@ class SimpleRetention(nn.Module):
     ) -> Tuple[Array, Array]:
         """Recurrent representation of the retention mechanism."""
         # Apply projection to q_proj, k_proj, v_proj
-        q_proj = query_n @ self.W_Q
-        k_proj = key_n @ self.W_K
-        v_proj = value_n @ self.W_V
+        q_proj = query_n @ self.w_q
+        k_proj = key_n @ self.w_k
+        v_proj = value_n @ self.w_v
 
         # Apply the retention mechanism and update the hidden state
         updated_hstate = hstate + (k_proj.transpose(0, -1, -2) @ v_proj)
