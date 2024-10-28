@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Tuple
+from typing import Tuple
 
 import chex
 import jax.numpy as jnp
@@ -27,6 +27,7 @@ from mava.networks.utils.mat.decode import (
     discrete_autoregressive_act,
     discrete_parallel_act,
 )
+from mava.systems.mat.types import MATNetworkConfig
 from mava.types import MavaObservation
 from mava.utils.network_utils import _CONTINUOUS, _DISCRETE
 
@@ -46,7 +47,7 @@ def _make_mlp(n_embd: int, use_swiglu: bool) -> nn.Module:
 
 class EncodeBlock(nn.Module):
     n_agent: int
-    net_config: Any
+    net_config: MATNetworkConfig
     masked: bool = False
 
     def setup(self) -> None:
@@ -70,7 +71,7 @@ class Encoder(nn.Module):
     obs_dim: int
     action_dim: int
     n_agent: int
-    net_config: Any
+    net_config: MATNetworkConfig
 
     def setup(self) -> None:
         ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
@@ -109,7 +110,7 @@ class Encoder(nn.Module):
 
 class DecodeBlock(nn.Module):
     n_agent: int
-    net_config: Any
+    net_config: MATNetworkConfig
     masked: bool = True
 
     def setup(self) -> None:
@@ -139,7 +140,7 @@ class Decoder(nn.Module):
     action_dim: int
     n_agent: int
     action_space_type: str
-    net_config: Any
+    net_config: MATNetworkConfig
 
     def setup(self) -> None:
         ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
@@ -203,7 +204,7 @@ class MultiAgentTransformer(nn.Module):
     obs_dim: int
     action_dim: int
     n_agent: int
-    net_config: Any
+    net_config: MATNetworkConfig
     action_space_type: str = _DISCRETE
 
     # General shapes legend:

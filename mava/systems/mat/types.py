@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass
+
 import chex
 from flax.core.frozen_dict import FrozenDict
 from jumanji.types import TimeStep
@@ -29,3 +31,14 @@ class LearnerState(NamedTuple):
     key: chex.PRNGKey
     env_state: State
     timestep: TimeStep
+
+
+@dataclass
+class MATNetworkConfig:
+    """Configuration for the MAT network."""
+
+    n_block: int
+    n_head: int
+    n_embd: int
+    use_swiglu: bool
+    use_rmsnorm: bool
