@@ -172,7 +172,7 @@ def init(
     # Automatic entropy tuning
     target_entropy = -cfg.system.target_entropy_scale * action_dim
     target_entropy = jnp.repeat(target_entropy, n_agents).astype(float)
-    # making sure we have shape=(B, A) so broacasting works fine
+    # making sure we have shape=(B, N) so broacasting works fine
     target_entropy = target_entropy[jnp.newaxis, :]
     if cfg.system.autotune:
         log_alpha = jnp.zeros_like(target_entropy)
@@ -348,7 +348,7 @@ def make_update_fns(
         )
 
         # Concat all actions and tile them for num agents to create joint actions for all agents
-        joint_next_actions = get_joint_action(next_action)  # (B, A, Act) -> (B, A, A * Act)
+        joint_next_actions = get_joint_action(next_action)  # (B, N, A) -> (B, N, N * A)
         next_q1_val = q_net.apply(params.q.targets.q1, data.next_obs, joint_next_actions)
         next_q2_val = q_net.apply(params.q.targets.q2, data.next_obs, joint_next_actions)
         next_q_val = jnp.minimum(next_q1_val, next_q2_val)
@@ -409,6 +409,7 @@ def make_update_fns(
                 # Select current agent's params/opt/obs: (N, ...) -> (...)
                 agent_params = tree_slice(params.actor, agent_id)
                 agent_opt_state = tree_slice(opt_states.actor, agent_id)
+                # jnp.s_ allows passing slices as a variables
                 agent_obs = tree_slice(data.obs, jnp.s_[:, agent_id])
 
                 # Update actor.
