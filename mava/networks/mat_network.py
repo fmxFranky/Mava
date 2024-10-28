@@ -207,7 +207,7 @@ class MultiAgentTransformer(nn.Module):
     net_config: MATNetworkConfig
     action_space_type: str = _DISCRETE
 
-    # General shapes legend:
+    # General shape names:
     # B: batch size
     # N: number of agents
     # O: observation dimension

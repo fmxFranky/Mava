@@ -44,8 +44,7 @@ class SelfAttention(nn.Module):
         # Shape names:
         # B: batch size
         # L: sequence length
-        # D: embedding dimension
-        # H: number of heads
+        # E: embedding dimension
         # hs: head size
         # nh: number of heads
 
@@ -53,7 +52,7 @@ class SelfAttention(nn.Module):
 
         # calculate query, key, values for all heads in batch and move
         # head forward to be the batch dim
-        # [B, L, D] -> [B, L, H, D//H]
+        # (B, L, E) -> (B, nh, L, hs)
         k = self.key(key).reshape(B, L, self.n_head, D // self.n_head).transpose((0, 2, 1, 3))
         q = self.query(query).reshape(B, L, self.n_head, D // self.n_head).transpose((0, 2, 1, 3))
         v = self.value(value).reshape(B, L, self.n_head, D // self.n_head).transpose((0, 2, 1, 3))
