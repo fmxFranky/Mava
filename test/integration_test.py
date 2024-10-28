@@ -106,7 +106,7 @@ def test_sac_system(fast_config: dict, system_path: str) -> None:
 def test_transformer_system(fast_config: dict, system_path: str) -> None:
     """Test transformer systems on random envs."""
     _, _, system_name = system_path.split(".")
-    env = random.choice(continuous_envs)
+    env = random.choice(continuous_envs + discrete_envs)
 
     with initialize(version_base=None, config_path=config_path):
         cfg = compose(config_name=f"{system_name}", overrides=[f"env={env}"])

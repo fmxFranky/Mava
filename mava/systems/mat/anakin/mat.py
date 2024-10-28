@@ -382,6 +382,8 @@ def learner_setup(
     )
 
     # Initialise actor params and optimiser state.
+    # `PRNGKey(0)` is just a dummy key we pass through the network since it needs a key for
+    # computing the network entropy at train time.
     params = actor_network.init(actor_net_key, init_x, init_action, jax.random.PRNGKey(0))
     opt_state = actor_optim.init(params)
 
@@ -446,7 +448,7 @@ def run_experiment(_config: DictConfig) -> float:
     env, eval_env = environments.make(config)
 
     # PRNG keys.
-    key, key_e, actor_net_key, _ = jax.random.split(jax.random.PRNGKey(config.system.seed), num=4)
+    key, key_e, actor_net_key = jax.random.split(jax.random.PRNGKey(config.system.seed), num=3)
 
     # Setup learner.
     learn, actor_network, learner_state = learner_setup(env, (key, actor_net_key), config)
