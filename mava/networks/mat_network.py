@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import chex
 import jax.numpy as jnp
@@ -45,21 +45,20 @@ def _make_mlp(n_embd: int, use_swiglu: bool) -> nn.Module:
 
 
 class EncodeBlock(nn.Module):
-    n_embd: int
-    n_head: int
     n_agent: int
+    net_config: Any
     masked: bool = False
-    use_swiglu: bool = False
-    use_rmsnorm: bool = False
 
     def setup(self) -> None:
-        ln = nn.RMSNorm if self.use_rmsnorm else nn.LayerNorm
+        ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
         self.ln1 = ln()
         self.ln2 = ln()
 
-        self.attn = SelfAttention(self.n_embd, self.n_head, self.n_agent, self.masked)
+        self.attn = SelfAttention(
+            self.net_config.n_embd, self.net_config.n_head, self.n_agent, self.masked
+        )
 
-        self.mlp = _make_mlp(self.n_embd, self.use_swiglu)
+        self.mlp = _make_mlp(self.net_config.n_embd, self.net_config.use_swiglu)
 
     def __call__(self, x: chex.Array) -> chex.Array:
         x = self.ln1(x + self.attn(x, x, x))
@@ -70,35 +69,28 @@ class EncodeBlock(nn.Module):
 class Encoder(nn.Module):
     obs_dim: int
     action_dim: int
-    n_block: int
-    n_embd: int
-    n_head: int
     n_agent: int
-    use_swiglu: bool = False
-    use_rmsnorm: bool = False
+    net_config: Any
 
     def setup(self) -> None:
-        ln = nn.RMSNorm if self.use_rmsnorm else nn.LayerNorm
+        ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
 
         self.obs_encoder = nn.Sequential(
-            [ln(), nn.Dense(self.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
+            [ln(), nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
         )
         self.ln = ln()
         self.blocks = nn.Sequential(
             [
                 EncodeBlock(
-                    self.n_embd,
-                    self.n_head,
                     self.n_agent,
-                    use_swiglu=self.use_swiglu,
-                    use_rmsnorm=self.use_swiglu,
+                    self.net_config,
                 )
-                for _ in range(self.n_block)
+                for _ in range(self.net_config.n_block)
             ]
         )
         self.head = nn.Sequential(
             [
-                nn.Dense(self.n_embd, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))),
                 nn.gelu,
                 ln(),
                 nn.Dense(1, kernel_init=orthogonal(0.01)),
@@ -116,23 +108,24 @@ class Encoder(nn.Module):
 
 
 class DecodeBlock(nn.Module):
-    n_embd: int
-    n_head: int
     n_agent: int
+    net_config: Any
     masked: bool = True
-    use_swiglu: bool = False
-    use_rmsnorm: bool = False
 
     def setup(self) -> None:
-        ln = nn.RMSNorm if self.use_rmsnorm else nn.LayerNorm
+        ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
         self.ln1 = ln()
         self.ln2 = ln()
         self.ln3 = ln()
 
-        self.attn1 = SelfAttention(self.n_embd, self.n_head, self.n_agent, self.masked)
-        self.attn2 = SelfAttention(self.n_embd, self.n_head, self.n_agent, self.masked)
+        self.attn1 = SelfAttention(
+            self.net_config.n_embd, self.net_config.n_head, self.n_agent, self.masked
+        )
+        self.attn2 = SelfAttention(
+            self.net_config.n_embd, self.net_config.n_head, self.n_agent, self.masked
+        )
 
-        self.mlp = _make_mlp(self.n_embd, self.use_swiglu)
+        self.mlp = _make_mlp(self.net_config.n_embd, self.net_config.use_swiglu)
 
     def __call__(self, x: chex.Array, rep_enc: chex.Array) -> chex.Array:
         x = self.ln1(x + self.attn1(x, x, x))
@@ -144,27 +137,25 @@ class DecodeBlock(nn.Module):
 class Decoder(nn.Module):
     obs_dim: int
     action_dim: int
-    n_block: int
-    n_embd: int
-    n_head: int
     n_agent: int
-    action_space_type: str = _DISCRETE
-    use_swiglu: bool = False
-    use_rmsnorm: bool = False
+    action_space_type: str
+    net_config: Any
 
     def setup(self) -> None:
-        ln = nn.RMSNorm if self.use_rmsnorm else nn.LayerNorm
+        ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
 
         if self.action_space_type == _DISCRETE:
             self.action_encoder = nn.Sequential(
                 [
-                    nn.Dense(self.n_embd, use_bias=False, kernel_init=orthogonal(jnp.sqrt(2))),
+                    nn.Dense(
+                        self.net_config.n_embd, use_bias=False, kernel_init=orthogonal(jnp.sqrt(2))
+                    ),
                     nn.gelu,
                 ],
             )
         else:
             self.action_encoder = nn.Sequential(
-                [nn.Dense(self.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
+                [nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
             )
             self.log_std = self.param("log_std", nn.initializers.zeros, (self.action_dim,))
 
@@ -174,23 +165,20 @@ class Decoder(nn.Module):
             self.log_std = None
 
         self.obs_encoder = nn.Sequential(
-            [ln(), nn.Dense(self.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
+            [ln(), nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
         )
         self.ln = ln()
         self.blocks = [
             DecodeBlock(
-                self.n_embd,
-                self.n_head,
                 self.n_agent,
-                use_swiglu=self.use_swiglu,
-                use_rmsnorm=self.use_swiglu,
+                self.net_config,
                 name=f"cross_attention_block_{block_id}",
             )
-            for block_id in range(self.n_block)
+            for block_id in range(self.net_config.n_block)
         ]
         self.head = nn.Sequential(
             [
-                nn.Dense(self.n_embd, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))),
                 nn.gelu,
                 ln(),
                 nn.Dense(self.action_dim, kernel_init=orthogonal(0.01)),
@@ -214,13 +202,9 @@ class Decoder(nn.Module):
 class MultiAgentTransformer(nn.Module):
     obs_dim: int
     action_dim: int
-    n_block: int
-    n_embd: int
-    n_head: int
     n_agent: int
+    net_config: Any
     action_space_type: str = _DISCRETE
-    use_swiglu: bool = False
-    use_rmsnorm: bool = False
 
     # General shapes legend:
     # B: batch size
@@ -236,23 +220,15 @@ class MultiAgentTransformer(nn.Module):
         self.encoder = Encoder(
             self.obs_dim,
             self.action_dim,
-            self.n_block,
-            self.n_embd,
-            self.n_head,
             self.n_agent,
-            use_swiglu=self.use_swiglu,
-            use_rmsnorm=self.use_rmsnorm,
+            self.net_config,
         )
         self.decoder = Decoder(
             self.obs_dim,
             self.action_dim,
-            self.n_block,
-            self.n_embd,
-            self.n_head,
             self.n_agent,
             self.action_space_type,
-            use_swiglu=self.use_swiglu,
-            use_rmsnorm=self.use_rmsnorm,
+            self.net_config,
         )
 
         if self.action_space_type == _DISCRETE:

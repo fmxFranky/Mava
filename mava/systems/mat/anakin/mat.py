@@ -370,12 +370,8 @@ def learner_setup(
     actor_network = MultiAgentTransformer(
         obs_dim=init_x.agents_view.shape[-1],
         action_dim=env.action_dim,
-        n_block=config.network.actor_network.n_block,
-        n_head=config.network.actor_network.n_head,
-        n_embd=config.network.actor_network.n_embd,
         n_agent=config.system.num_agents,
-        use_rmsnorm=config.network.use_rmsnorm,
-        use_swiglu=config.network.use_swiglu,
+        net_config=config.network,
         action_space_type=action_space_type,
     )
 

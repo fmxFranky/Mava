@@ -1,8 +1,6 @@
 # --- Network params ---
-actor_network:
-  n_block: 3
-  n_embd: 128
-  n_head: 1
-
-use_rmsnorm: False
-use_swiglu: False
+n_block: 3 # Transformer blocks
+n_embd: 128 # Transformer embedding dimension
+n_head: 1 # Transformer heads
+use_rmsnorm: False # Whether to use RMSNorm instead of LayerNorm
+use_swiglu: False # Use SwiGLU instead of a 2-layer MLP for the feedforward networks
