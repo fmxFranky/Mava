@@ -23,14 +23,19 @@ import numpy as np
 from jax import tree
 from typing_extensions import TypeAlias
 
-Indexer: TypeAlias = Union[int, slice, Tuple[slice, ...]]
+# Different types used for indexing arrays: int/slice or tuple of int/slice
+Indexer: TypeAlias = Union[int, slice, Tuple[slice, ...], Tuple[int, ...]]
 
 
 def tree_slice(pytree: chex.ArrayTree, i: Indexer) -> chex.ArrayTree:
+    """Returns: a new pytree where for each leaf: leaf[i] is returned."""
     return tree.map(lambda x: x[i], pytree)
 
 
 def tree_at_set(old_tree: chex.ArrayTree, i: Indexer, new_tree: chex.ArrayTree) -> chex.ArrayTree:
+    """Update `old_tree` at position `i` with `new_tree`.
+    Both trees must have equal dtypes and structures.
+    """
     chex.assert_trees_all_equal_structs(old_tree, new_tree)
     chex.assert_trees_all_equal_dtypes(old_tree, new_tree)
     return tree.map(lambda old, new: old.at[i].set(new), old_tree, new_tree)

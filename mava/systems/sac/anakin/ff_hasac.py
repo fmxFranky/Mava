@@ -158,6 +158,7 @@ def init(
         action_head, action_dim=env.action_dim, independent_std=False
     )
     actor_network = Actor(actor_torso, actor_action_head)
+    # `vmap` creates separate parameters per agent.
     actor_params = jax.vmap(actor_network.init, in_axes=(0, None))(actor_keys, obs_single_batched)
 
     # Making Q networks
