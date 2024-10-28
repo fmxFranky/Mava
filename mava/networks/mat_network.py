@@ -145,25 +145,23 @@ class Decoder(nn.Module):
     def setup(self) -> None:
         ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
 
-        if self.action_space_type == _DISCRETE:
-            self.action_encoder = nn.Sequential(
-                [
-                    nn.Dense(
-                        self.net_config.n_embd, use_bias=False, kernel_init=orthogonal(jnp.sqrt(2))
-                    ),
-                    nn.gelu,
-                ],
-            )
-        else:
-            self.action_encoder = nn.Sequential(
-                [nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
-            )
-            self.log_std = self.param("log_std", nn.initializers.zeros, (self.action_dim,))
+        use_bias = self.action_space_type == _CONTINUOUS
+        self.action_encoder = nn.Sequential(
+            [
+                nn.Dense(
+                    self.net_config.n_embd, use_bias=use_bias, kernel_init=orthogonal(jnp.sqrt(2))
+                ),
+                nn.gelu,
+            ],
+        )
 
         # Always initialize log_std but set to None for discrete action spaces
         # This ensures the attribute exists but signals it should not be used.
-        if self.action_space_type == _DISCRETE:
-            self.log_std = None
+        self.log_std = (
+            self.param("log_std", nn.initializers.zeros, (self.action_dim,))
+            if self.action_space_type == _CONTINUOUS
+            else None
+        )
 
         self.obs_encoder = nn.Sequential(
             [ln(), nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
