@@ -91,14 +91,15 @@ def init(
     # Shape legend:
     # T: Time
     # B: Batch
-    # A: Agent
-    # Make dummy inputs to init recurrent Q network -> need shape (T, B, A, ...)
-    init_obs = env.observation_spec().generate_value()  # (A, ...)
-    # (B, T, A, ...)
+    # N: Agent
+
+    # Make dummy inputs to init recurrent Q network -> need shape (T, B, N, ...)
+    init_obs = env.observation_spec().generate_value()  # (N, ...)
+    # (B, T, N, ...)
     init_obs_batched = tree.map(lambda x: x[jnp.newaxis, jnp.newaxis, ...], init_obs)
     init_term_or_trunc = jnp.zeros((1, 1, 1), dtype=bool)  # (T, B, 1)
     init_x = (init_obs_batched, init_term_or_trunc)
-    # (B, A, ...)
+    # (B, N, ...)
     init_hidden_state = ScannedRNN.initialize_carry(
         (cfg.arch.num_envs, num_agents), cfg.network.hidden_state_dim
     )
@@ -164,8 +165,8 @@ def init(
     # episode horizon has been reached. We use this exclusively in QMIX.
     # Terminal refers to individual agent dones. We keep this here for consistency with IQL.
     init_transition = Transition(
-        obs=init_obs,  # (A, ...)
-        action=init_acts,  # (A,)
+        obs=init_obs,  # (N, ...)
+        action=init_acts,  # (N,)
         reward=jnp.zeros((1,), dtype=float),
         terminal=jnp.zeros((1,), dtype=bool),
         term_or_trunc=jnp.zeros((1,), dtype=bool),
@@ -261,7 +262,7 @@ def make_update_fns(
         new_key, explore_key = jax.random.split(key, 2)
 
         action = eps_greedy_dist.sample(seed=explore_key)
-        action = action[0, ...]  # (1, B, A) -> (B, A)
+        action = action[0, ...]  # (1, B, N) -> (B, N)
 
         # repack new selection params
         next_action_selection_state = ActionSelectionState(
@@ -352,7 +353,7 @@ def make_update_fns(
         # NOTE: States are replicated over agents so we take only take first one
         q_online = mixer.apply(
             online_mixer_params, q_online, obs.global_state[:, :, 0, ...]
-        )  # B,T,A,... -> B,T,1,...
+        )  # (B, T, N, ...) -> (B , T, 1 , ...)
 
         q_loss = jnp.mean((q_online - target) ** 2)
 
@@ -406,7 +407,7 @@ def make_update_fns(
 
         next_q_val = mixer.apply(
             params.mixer_target, next_q_val, data_next.obs.global_state[:, :, 0, ...]
-        )  # B,T,A,... -> B,T,1,...
+        )  # (B, T, N, ...) -> (B , T, 1 , ...)
 
         # TD Target
         target_q_val = reward + (1.0 - next_done) * cfg.system.gamma * next_q_val

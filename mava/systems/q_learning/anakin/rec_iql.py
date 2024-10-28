@@ -85,17 +85,19 @@ def init(
     num_agents = env.num_agents
 
     key, q_key = jax.random.split(key, 2)
+
     # Shape legend:
-    # T: Time (dummy dimension size = 1)
-    # B: Batch (dummy dimension size = 1)
-    # A: Agent
-    # Make dummy inputs to init recurrent Q network -> need shape (T, B, A, ...)
-    init_obs = env.observation_spec().generate_value()  # (A, ...)
-    # (B, T, A, ...)
+    # T: Time
+    # B: Batch
+    # N: Agent
+
+    # Make dummy inputs to init recurrent Q network -> need shape (T, B, N, ...)
+    init_obs = env.observation_spec().generate_value()  # (N, ...)
+    # (B, T, N, ...)
     init_obs_batched = tree.map(lambda x: x[jnp.newaxis, jnp.newaxis, ...], init_obs)
     init_term_or_trunc = jnp.zeros((1, 1, 1), dtype=bool)  # (T, B, 1)
     init_x = (init_obs_batched, init_term_or_trunc)  # pack the RNN dummy inputs
-    # (B, A, ...)
+    # (B, N, ...)
     init_hidden_state = ScannedRNN.initialize_carry(
         (cfg.arch.num_envs, num_agents), cfg.network.hidden_state_dim
     )
@@ -128,9 +130,9 @@ def init(
     init_hidden_state = replicate(init_hidden_state)
 
     # Create dummy transition
-    init_acts = env.action_spec().generate_value()  # (A,)
+    init_acts = env.action_spec().generate_value()  # (N,)
     init_transition = Transition(
-        obs=init_obs,  # (A, ...)
+        obs=init_obs,  # (N, ...)
         action=init_acts,
         reward=jnp.zeros((num_agents,), dtype=float),
         terminal=jnp.zeros((1,), dtype=bool),  # one flag for all agents
@@ -226,7 +228,7 @@ def make_update_fns(
         new_key, explore_key = jax.random.split(key, 2)
 
         action = eps_greedy_dist.sample(seed=explore_key)
-        action = action[0, ...]  # (1, B, A) -> (B, A)
+        action = action[0, ...]  # (1, B, N) -> (B, N)
 
         next_action_selection_state = ActionSelectionState(
             params, next_hidden_state, t + cfg.arch.num_envs, new_key
