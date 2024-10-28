@@ -477,9 +477,7 @@ def make_update_fns(
 
         return next_learner_state, (metrics, losses)
 
-    pmaped_update_step: Callable[
-        [LearnerState[QNetParams]], Tuple[LearnerState[QNetParams], Tuple[Metrics, Metrics]]
-    ] = jax.pmap(
+    pmaped_update_step = jax.pmap(
         jax.vmap(
             lambda state: lax.scan(update_step, state, None, length=cfg.system.scan_steps),
             axis_name="batch",
