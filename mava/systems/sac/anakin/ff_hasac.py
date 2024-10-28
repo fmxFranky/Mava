@@ -292,7 +292,7 @@ def make_update_fns(
     ) -> Tuple[Array, Metrics]:
         q1_params, q2_params = q_params
         # Concat all actions and tile them for num agents to create joint actions for all agents
-        joint_action = get_joint_action(action)  # (B, A, Act) -> (B, A, A * Act)
+        joint_action = get_joint_action(action)  # (B, N, A) -> (N, N, N * A)
 
         q1_a_values = q_net.apply(q1_params, obs, joint_action)
         q2_a_values = q_net.apply(q2_params, obs, joint_action)
