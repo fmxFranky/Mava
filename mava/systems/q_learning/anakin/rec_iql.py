@@ -326,26 +326,26 @@ def make_update_fns(
         return q_loss, loss_info
 
     def update_q(
-        params: QNetParams, opt_states: optax.OptState, data: Transition, t_train: int
+        params: QNetParams, opt_states: optax.OptState, data_full: Transition, t_train: int
     ) -> Tuple[QNetParams, optax.OptState, Metrics]:
         """Update the Q parameters."""
         # Get data aligned with current/next timestep
-        data_t0 = tree.map(lambda x: x[:, :-1, ...], data)
-        data_t1 = tree.map(lambda x: x[:, 1:, ...], data)
+        data = tree.map(lambda x: x[:, :-1, ...], data_full)
+        data_next = tree.map(lambda x: x[:, 1:, ...], data_full)
 
-        obs = data_t0.obs
-        term_or_trunc = data_t0.term_or_trunc
-        reward = data_t0.reward
-        action = data_t0.action
+        obs = data.obs
+        term_or_trunc = data.term_or_trunc
+        reward = data.reward
+        action = data.action
 
         # The three following variables all come from the same time step.
         # They are stored and accessed in this way because of the `AutoResetWrapper`.
-        # At the end of an episode `data_t0.next_obs` and `data_t1.obs` will be
-        # different, which is why we need to store both. Thus `data_t0.next_obs`
-        # aligns with the `terminal` from `data_t1`.
-        next_obs = data_t0.next_obs
-        next_term_or_trunc = data_t1.term_or_trunc
-        next_terminal = data_t1.terminal
+        # At the end of an episode `data.next_obs` and `data_next.obs` will be
+        # different, which is why we need to store both. Thus `data.next_obs`
+        # aligns with the `terminal` from `data_next`.
+        next_obs = data.next_obs
+        next_term_or_trunc = data_next.term_or_trunc
+        next_terminal = data_next.terminal
 
         # Scan over each sample
         hidden_state, next_obs_term_or_trunc = prep_inputs_to_scannedrnn(

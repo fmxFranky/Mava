@@ -368,21 +368,21 @@ def make_update_fns(
         return q_loss, loss_info
 
     def update_q(
-        params: QMIXParams, opt_states: optax.OptState, data: Transition, t_train: int
+        params: QMIXParams, opt_states: optax.OptState, data_full: Transition, t_train: int
     ) -> Tuple[QMIXParams, optax.OptState, Metrics]:
         """Update the Q parameters."""
 
         # Get data aligned with current/next timestep
-        data_t0 = tree.map(lambda x: x[:, :-1, ...], data)  # (B, T, ...)
-        data_t1 = tree.map(lambda x: x[:, 1:, ...], data)  # (B, T, ...)
+        data = tree.map(lambda x: x[:, :-1, ...], data_full)  # (B, T, ...)
+        data_next = tree.map(lambda x: x[:, 1:, ...], data_full)  # (B, T, ...)
 
-        reward_t0 = data_t0.reward
-        next_done = data_t1.term_or_trunc
+        reward = data.reward
+        next_done = data_next.term_or_trunc
 
         # Get the greedy action using the distribution.
         # Epsilon defaults to 0.
         hidden_state, next_obs_term_or_trunc = prep_inputs_to_scannedrnn(
-            data.obs, data.term_or_trunc
+            data_full.obs, data_full.term_or_trunc
         )  # (T, B, ...)
         _, next_greedy_dist = q_net.apply(params.online, hidden_state, next_obs_term_or_trunc)
         next_action = next_greedy_dist.mode()  # (T, B, ...)
@@ -390,7 +390,7 @@ def make_update_fns(
         next_action = next_action[:, 1:, ...]  # (B, T, ...)
 
         hidden_state, next_obs_term_or_trunc = prep_inputs_to_scannedrnn(
-            data.obs, data.term_or_trunc
+            data_full.obs, data_full.term_or_trunc
         )  # (T, B, ...)
 
         _, next_q_vals_target = q_net.apply(
@@ -405,23 +405,23 @@ def make_update_fns(
         )
 
         next_q_val = mixer.apply(
-            params.mixer_target, next_q_val, data_t1.obs.global_state[:, :, 0, ...]
+            params.mixer_target, next_q_val, data_next.obs.global_state[:, :, 0, ...]
         )  # B,T,A,... -> B,T,1,...
 
         # TD Target
-        target_q_val = reward_t0 + (1.0 - next_done) * cfg.system.gamma * next_q_val
+        target_q_val = reward + (1.0 - next_done) * cfg.system.gamma * next_q_val
 
         q_grad_fn = jax.grad(q_loss_fn, has_aux=True)
         q_grads, q_loss_info = q_grad_fn(
             (params.online, params.mixer_online),
-            data_t0.obs,
-            data_t0.term_or_trunc,
-            data_t0.action,
+            data.obs,
+            data.term_or_trunc,
+            data.action,
             target_q_val,
         )
-        q_loss_info["mean_reward_t0"] = jnp.mean(reward_t0)
+        q_loss_info["mean_reward_t0"] = jnp.mean(reward)
         q_loss_info["mean_next_qval"] = jnp.mean(next_q_val)
-        q_loss_info["done"] = jnp.mean(data.term_or_trunc)
+        q_loss_info["done"] = jnp.mean(data_full.term_or_trunc)
 
         # Mean over the device and batch dimension.
         q_grads, q_loss_info = lax.pmean((q_grads, q_loss_info), axis_name="device")
