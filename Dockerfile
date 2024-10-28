@@ -1,5 +1,5 @@
 # Stage 1: Build environment
-FROM python:3.12-slim as core
+FROM python:3.12-slim AS core
 
 # Add git
 RUN apt-get update && apt-get install -y git build-essential pkg-config libhdf5-dev
