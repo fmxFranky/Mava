@@ -60,7 +60,7 @@ class CNNTorso(nn.Module):
         """Forward pass."""
         x = observation
         for channel, kernel, stride in zip(
-            self.channel_sizes, self.kernel_sizes, self.strides, strict=False
+            self.channel_sizes, self.kernel_sizes, self.strides, strict=True
         ):
             x = nn.Conv(channel, (kernel, kernel), (stride, stride))(x)
             if self.use_layer_norm:
