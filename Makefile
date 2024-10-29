@@ -2,7 +2,7 @@
 GPUS := $(shell command -v nvidia-smi > /dev/null && nvidia-smi > /dev/null 2>&1 && echo "--gpus all" || echo "")
 
 # Set flag for docker run command
-BASE_FLAGS=-it --rm -v ${PWD}:/home/app/mava -w /home/app/mava
+BASE_FLAGS=-it --rm
 RUN_FLAGS=$(GPUS) $(BASE_FLAGS)
 
 DOCKER_IMAGE_NAME = mava
