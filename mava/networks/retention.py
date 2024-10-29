@@ -261,7 +261,9 @@ class MultiScaleRetention(nn.Module):
         h_ns = jnp.copy(hstate)
         for head in range(self.n_head):
             y, h_n = self.retentions[head](key, query, value, hstate[:, head], dones)
-            ret_output = ret_output.at[:, :, self.head_size : (self.head_size + 1)].set(y)
+            ret_output = ret_output.at[
+                :, :, self.head_size * head : self.head_size * (head + 1)
+            ].set(y)
             h_ns = h_ns.at[:, head, :, :].set(h_n)
 
         # Gated Multi-scale retention
@@ -289,7 +291,9 @@ class MultiScaleRetention(nn.Module):
         h_ns = jnp.zeros_like(hstate)
         for head in range(self.n_head):
             y, h_n = self.retentions[head].recurrent(key_n, query_n, value_n, hstate[:, head])
-            ret_output = ret_output.at[:, :, self.head_size : (self.head_size + 1)].set(y)
+            ret_output = ret_output.at[
+                :, :, self.head_size * head : self.head_size * (head + 1)
+            ].set(y)
             h_ns = h_ns.at[:, head, :, :].set(h_n)
 
         # Gated Multi-scale retention
