@@ -64,13 +64,14 @@ class SimpleRetention(nn.Module):
         k_proj = k_proj.transpose(0, -1, -2)
 
         # Compute next hidden state
-        decay_matrix = self.get_decay_matrix(dones)
-        xi = self.get_xi(dones)
         if self.net_config.type == "ff_sable":
+            # No decay matrix or xi for FF Sable since we don't have temporal dependencies.
+            decay_matrix = jnp.ones((batch, chunk_size, chunk_size))
+            xi = jnp.ones((batch, chunk_size, 1))
             next_hstate = (k_proj @ v_proj) + hstate
-            decay_matrix = jnp.ones_like(decay_matrix)
-            xi = jnp.ones_like(xi)
         else:
+            decay_matrix = self.get_decay_matrix(dones)
+            xi = self.get_xi(dones)
             chunk_decay = self.decay_kappa ** (chunk_size // self.n_agents)
             delta = ~jnp.any(dones[:, :: self.n_agents], axis=1)[:, jnp.newaxis, jnp.newaxis]
             next_hstate = (
