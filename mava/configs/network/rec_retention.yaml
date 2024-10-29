@@ -1,13 +1,16 @@
 # ---  Retention for Memory Sable ---
-n_block: 1 # Number of blocks
-embed_dim: 64 # Embedding dimension
-n_head: 1 # Number of heads
-decay_scaling_factor: 0.8 # Decay scaling factor for the kappa parameter: kappa = kappa * decay_scaling_factor
+net_config:
+  n_block: 1 # Number of blocks
+  embed_dim: 64 # Embedding dimension
+  n_head: 1 # Number of heads
 
-rec_config:
+memory_config:
   type: "rec_sable" # Type of the network.
+  # --- Memory  factor ---
+  decay_scaling_factor: 0.8 # Decay scaling factor for the kappa parameter: kappa = kappa * decay_scaling_factor
   # --- Positional encoding ---
   timestep_positional_encoding: False # Timestamp positional encoding for Sable memory.
+  # --- Chunking ---
   # Chunking the sequence into smaller parts to fit into memory.
   use_chunkwise: False # Whether to chunk the sequence.
   timestep_chunk_size: 32 # Size of the chunk: calculated over timesteps dim.

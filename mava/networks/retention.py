@@ -31,7 +31,7 @@ class SimpleRetention(nn.Module):
     n_agents: int
     full_self_retention: bool
     decay_kappa: float
-    net_config: DictConfig
+    memory_config: DictConfig
 
     def setup(self) -> None:
         # Initialize the weights
@@ -64,7 +64,7 @@ class SimpleRetention(nn.Module):
         k_proj = k_proj.transpose(0, -1, -2)
 
         # Compute next hidden state
-        if self.net_config.type == "ff_sable":
+        if self.memory_config.type == "ff_sable":
             # No decay matrix or xi for FF Sable since we don't have temporal dependencies.
             decay_matrix = jnp.ones((batch, chunk_size, chunk_size))
             xi = jnp.ones((batch, chunk_size, 1))
@@ -198,7 +198,7 @@ class MultiScaleRetention(nn.Module):
     embed_dim: int
     n_head: int
     n_agents: int
-    net_config: DictConfig
+    memory_config: DictConfig
     full_self_retention: bool = False
     decay_scaling_factor: float = 1.0
 
@@ -234,13 +234,13 @@ class MultiScaleRetention(nn.Module):
                 self.n_agents,
                 self.full_self_retention,
                 decay_kappa,
-                self.net_config,
+                self.memory_config,
             )
             for decay_kappa in self.decay_kappas
         ]
 
         # Create an instance of the positional encoding
-        self.pe = PositionalEncoding(self.net_config, self.embed_dim)
+        self.pe = PositionalEncoding(self.memory_config, self.embed_dim)
 
     def __call__(
         self,

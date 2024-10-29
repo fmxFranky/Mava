@@ -395,12 +395,10 @@ def learner_setup(
 
     # Define network.
     sable_network = SableNetwork(
-        n_block=config.network.n_block,
-        embed_dim=config.network.embed_dim,
-        n_head=config.network.n_head,
         n_agents=n_agents,
         action_dim=action_dim,
-        net_config=config.network.ff_config,
+        net_config=config.network.net_config,
+        memory_config=config.network.memory_config,
         action_space_type="discrete",
     )
 
@@ -414,7 +412,7 @@ def learner_setup(
     # Get mock inputs to initialise network.
     init_obs = env.observation_spec().generate_value()
     init_obs = tree.map(lambda x: x[jnp.newaxis, ...], init_obs)  # Add batch dim
-    init_hs = get_init_hidden_state(config.network, config.arch.num_envs)
+    init_hs = get_init_hidden_state(config.network.net_config, config.arch.num_envs)
     init_hs = tree.map(lambda x: x[0, jnp.newaxis], init_hs)
 
     # Initialise params and optimiser state.
@@ -431,8 +429,8 @@ def learner_setup(
     minibatch_size = (
         config.arch.num_envs * config.system.rollout_length // config.system.num_minibatches
     )
-    dummy_executor_hs = get_init_hidden_state(config.network, config.arch.num_envs)
-    dummy_trainer_hs = get_init_hidden_state(config.network, minibatch_size)
+    dummy_executor_hs = get_init_hidden_state(config.network.net_config, config.arch.num_envs)
+    dummy_trainer_hs = get_init_hidden_state(config.network.net_config, minibatch_size)
 
     # Pack apply and update functions.
     # Using dummy hstates, since we are not updating the hstates during training.
@@ -520,7 +518,7 @@ def run_experiment(_config: DictConfig) -> float:
     # Define Apply fn for evaluation.
     # Create a fake hstate: will not be updated during steps
     eval_batch_size = get_num_eval_envs(config, absolute_metric=False)
-    eval_hs = get_init_hidden_state(config.network, eval_batch_size)
+    eval_hs = get_init_hidden_state(config.network.net_config, eval_batch_size)
     sable_execution_fn = partial(sable_execution_fn, hstates=eval_hs)
     eval_act_fn = make_ff_sable_act_fn(sable_execution_fn)
     # Create evaluator
@@ -610,7 +608,7 @@ def run_experiment(_config: DictConfig) -> float:
     # Measure absolute metric.
     if config.arch.absolute_metric:
         eval_batch_size = get_num_eval_envs(config, absolute_metric=True)
-        abs_hs = get_init_hidden_state(config.network, eval_batch_size)
+        abs_hs = get_init_hidden_state(config.network.net_config, eval_batch_size)
         sable_execution_fn = partial(sable_execution_fn, hstates=abs_hs)
         eval_act_fn = make_ff_sable_act_fn(sable_execution_fn)
         abs_metric_evaluator = get_eval_fn(eval_env, eval_act_fn, config, absolute_metric=True)

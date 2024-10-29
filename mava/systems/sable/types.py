@@ -21,6 +21,14 @@ from optax._src.base import OptState
 from typing_extensions import NamedTuple
 
 
+class SableNetworkConfig(NamedTuple):
+    """Configuration for the Sable network."""
+
+    n_block: int
+    n_head: int
+    embed_dim: int
+
+
 class HiddenStates(NamedTuple):
     """Hidden states for the encoder and decoder."""
 

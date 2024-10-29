@@ -1,10 +1,12 @@
 # ---  Retention for Non-memory Sable ---
-n_block: 1 # Number of blocks
-embed_dim: 64 # Embedding dimension
-n_head: 1 # Number of heads
+net_config:
+  n_block: 1 # Number of blocks
+  embed_dim: 64 # Embedding dimension
+  n_head: 1 # Number of heads
 
-ff_config:
+memory_config:
   type: "ff_sable" # Type of the network.
+  # --- chunking ---
   # Chunking the sequence into smaller parts to fit into memory.
   use_chunkwise: False # Whether to chunk the sequence.
   agents_chunk_size: 2 # Size of the chunk: calculated over agents dim.

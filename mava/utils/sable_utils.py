@@ -21,7 +21,7 @@ import jax.numpy as jnp
 from flax import linen as nn
 from omegaconf import DictConfig
 
-from mava.systems.sable.types import HiddenStates
+from mava.systems.sable.types import HiddenStates, SableNetworkConfig
 
 
 class SwiGLU(nn.Module):
@@ -69,7 +69,7 @@ def concat_time_and_agents(x: chex.Array) -> chex.Array:
     return x
 
 
-def get_init_hidden_state(actor_net_config: DictConfig, batch_size: int) -> HiddenStates:
+def get_init_hidden_state(actor_net_config: SableNetworkConfig, batch_size: int) -> HiddenStates:
     """Initializes the hidden states for the encoder and decoder."""
     # Compute the hidden state size based on embedding dimension and number of heads
     hidden_size = actor_net_config.embed_dim // actor_net_config.n_head
@@ -96,7 +96,7 @@ def get_init_hidden_state(actor_net_config: DictConfig, batch_size: int) -> Hidd
 class PositionalEncoding(nn.Module):
     """Positional Encoding for Sable. Encodes position information into sequences"""
 
-    net_config: DictConfig
+    memory_config: DictConfig
     d_model: int
 
     def setup(self) -> None:
@@ -107,8 +107,8 @@ class PositionalEncoding(nn.Module):
             jnp.arange(0, self.d_model, 2) * (-jnp.log(10000.0) / self.d_model)
         )[jnp.newaxis]
         # Add a flag to enable positional encoding based on the network type
-        if self.net_config.type == "rec_sable":
-            self.do_pos_enc = self.net_config.timestep_positional_encoding
+        if self.memory_config.type == "rec_sable":
+            self.do_pos_enc = self.memory_config.timestep_positional_encoding
         else:
             self.do_pos_enc = False
 

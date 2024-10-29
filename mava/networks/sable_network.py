@@ -24,7 +24,7 @@ from omegaconf import DictConfig
 
 from mava.networks.retention import MultiScaleRetention
 from mava.networks.utils.sable.discrete_trainer_executor import *  # noqa
-from mava.systems.sable.types import HiddenStates
+from mava.systems.sable.types import HiddenStates, SableNetworkConfig
 from mava.types import Observation
 from mava.utils.sable_utils import SwiGLU
 
@@ -32,11 +32,9 @@ from mava.utils.sable_utils import SwiGLU
 class EncodeBlock(nn.Module):
     """Sable encoder block."""
 
-    embed_dim: int
-    n_head: int
+    net_config: SableNetworkConfig
+    memory_config: DictConfig
     n_agents: int
-    net_config: DictConfig
-    decay_scaling_factor: float
 
     def setup(self) -> None:
         # Initialize the RMSNorm layer normalization
@@ -45,16 +43,16 @@ class EncodeBlock(nn.Module):
 
         # Initialize the MultiScaleRetention
         self.retn = MultiScaleRetention(
-            embed_dim=self.embed_dim,
-            n_head=self.n_head,
+            embed_dim=self.net_config.embed_dim,
+            n_head=self.net_config.n_head,
             n_agents=self.n_agents,
             full_self_retention=True,  # Full retention for the encoder
-            net_config=self.net_config,
-            decay_scaling_factor=self.decay_scaling_factor,
+            memory_config=self.memory_config,
+            decay_scaling_factor=self.memory_config.decay_scaling_factor,
         )
 
         # Initialize SwiGLU feedforward network
-        self.ffn = SwiGLU(self.embed_dim, self.embed_dim)
+        self.ffn = SwiGLU(self.net_config.embed_dim, self.net_config.embed_dim)
 
     def __call__(
         self, x: chex.Array, hstate: chex.Array, dones: chex.Array, timestep_id: chex.Array
@@ -80,12 +78,9 @@ class EncodeBlock(nn.Module):
 class Encoder(nn.Module):
     """Multi-block encoder consisting of multiple `EncoderBlock` modules."""
 
-    n_block: int
-    embed_dim: int
-    n_head: int
+    net_config: SableNetworkConfig
+    memory_config: DictConfig
     n_agents: int
-    net_config: DictConfig
-    decay_scaling_factor: float = 1.0
 
     def setup(self) -> None:
         # Initialize the RMSNorm layer normalization
@@ -95,13 +90,15 @@ class Encoder(nn.Module):
         self.obs_encoder = nn.Sequential(
             [
                 nn.RMSNorm(),
-                nn.Dense(self.embed_dim, kernel_init=orthogonal(jnp.sqrt(2)), use_bias=False),
+                nn.Dense(
+                    self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2)), use_bias=False
+                ),
                 nn.gelu,
             ],
         )
         self.head = nn.Sequential(
             [
-                nn.Dense(self.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
                 nn.gelu,
                 nn.RMSNorm(),
                 nn.Dense(1, kernel_init=orthogonal(0.01)),
@@ -111,14 +108,12 @@ class Encoder(nn.Module):
         # Initialize the encoder blocks
         self.blocks = [
             EncodeBlock(
-                self.embed_dim,
-                self.n_head,
-                self.n_agents,
                 self.net_config,
-                self.decay_scaling_factor,
+                self.memory_config,
+                self.n_agents,
                 name=f"encoder_block_{block_id}",
             )
-            for block_id in range(self.n_block)
+            for block_id in range(self.net_config.n_block)
         ]
 
     def __call__(
@@ -169,11 +164,9 @@ class Encoder(nn.Module):
 class DecodeBlock(nn.Module):
     """Sable decoder block."""
 
-    embed_dim: int
-    n_head: int
+    net_config: SableNetworkConfig
+    memory_config: DictConfig
     n_agents: int
-    net_config: DictConfig
-    decay_scaling_factor: float
 
     def setup(self) -> None:
         # Initialize the RMSNorm layer normalization
@@ -181,24 +174,24 @@ class DecodeBlock(nn.Module):
 
         # Initialize the MultiScaleRetention
         self.retn1 = MultiScaleRetention(
-            embed_dim=self.embed_dim,
-            n_head=self.n_head,
+            embed_dim=self.net_config.embed_dim,
+            n_head=self.net_config.n_head,
             n_agents=self.n_agents,
             full_self_retention=False,  # Masked retention for the decoder
-            net_config=self.net_config,
-            decay_scaling_factor=self.decay_scaling_factor,
+            memory_config=self.memory_config,
+            decay_scaling_factor=self.memory_config.decay_scaling_factor,
         )
         self.retn2 = MultiScaleRetention(
-            embed_dim=self.embed_dim,
-            n_head=self.n_head,
+            embed_dim=self.net_config.embed_dim,
+            n_head=self.net_config.n_head,
             n_agents=self.n_agents,
             full_self_retention=False,  # Masked retention for the decoder
-            net_config=self.net_config,
-            decay_scaling_factor=self.decay_scaling_factor,
+            memory_config=self.memory_config,
+            decay_scaling_factor=self.memory_config.decay_scaling_factor,
         )
 
         # Initialize SwiGLU feedforward network
-        self.ffn = SwiGLU(self.embed_dim, self.embed_dim)
+        self.ffn = SwiGLU(self.net_config.embed_dim, self.net_config.embed_dim)
 
     def __call__(
         self,
@@ -260,13 +253,10 @@ class DecodeBlock(nn.Module):
 class Decoder(nn.Module):
     """Multi-block decoder consisting of multiple `DecoderBlock` modules."""
 
-    n_block: int
-    embed_dim: int
-    n_head: int
+    net_config: SableNetworkConfig
+    memory_config: DictConfig
     n_agents: int
     action_dim: int
-    net_config: DictConfig
-    decay_scaling_factor: float = 1.0
     action_space_type: str = "discrete"
 
     def setup(self) -> None:
@@ -277,7 +267,11 @@ class Decoder(nn.Module):
         if self.action_space_type == "discrete":
             self.action_encoder = nn.Sequential(
                 [
-                    nn.Dense(self.embed_dim, use_bias=False, kernel_init=orthogonal(jnp.sqrt(2))),
+                    nn.Dense(
+                        self.net_config.embed_dim,
+                        use_bias=False,
+                        kernel_init=orthogonal(jnp.sqrt(2)),
+                    ),
                     nn.gelu,
                 ],
             )
@@ -285,13 +279,13 @@ class Decoder(nn.Module):
             self.log_std = None
         else:
             self.action_encoder = nn.Sequential(
-                [nn.Dense(self.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
+                [nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
             )
             self.log_std = self.param("log_std", nn.initializers.zeros, (self.action_dim,))
         # Initialize the head layer for the action logits
         self.head = nn.Sequential(
             [
-                nn.Dense(self.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
                 nn.gelu,
                 nn.RMSNorm(),
                 nn.Dense(self.action_dim, kernel_init=orthogonal(0.01)),
@@ -301,14 +295,12 @@ class Decoder(nn.Module):
         # Initialize the decoder blocks
         self.blocks = [
             DecodeBlock(
-                self.embed_dim,
-                self.n_head,
-                self.n_agents,
                 self.net_config,
-                self.decay_scaling_factor,
+                self.memory_config,
+                self.n_agents,
                 name=f"decoder_block_{block_id}",
             )
-            for block_id in range(self.n_block)
+            for block_id in range(self.net_config.n_block)
         ]
 
     def __call__(
@@ -372,13 +364,10 @@ class Decoder(nn.Module):
 class SableNetwork(nn.Module):
     """Sable network module."""
 
-    n_block: int
-    embed_dim: int
-    n_head: int
     n_agents: int
     action_dim: int
-    net_config: DictConfig
-    decay_scaling_factor: float = 1.0
+    net_config: SableNetworkConfig
+    memory_config: DictConfig
     action_space_type: str = "discrete"
 
     def setup(self) -> None:
@@ -389,32 +378,28 @@ class SableNetwork(nn.Module):
         ], "Invalid action space type"
 
         self.n_agents_per_chunk = self.n_agents
-        if self.net_config.use_chunkwise:
-            if self.net_config.type == "ff_sable":
-                self.net_config.chunk_size = self.net_config.agents_chunk_size
+        if self.memory_config.use_chunkwise:
+            if self.memory_config.type == "ff_sable":
+                self.memory_config.chunk_size = self.memory_config.agents_chunk_size
                 assert (
-                    self.n_agents % self.net_config.chunk_size == 0
+                    self.n_agents % self.memory_config.chunk_size == 0
                 ), "Number of agents should be divisible by chunk size"
-                self.n_agents_per_chunk = self.net_config.chunk_size
+                self.n_agents_per_chunk = self.memory_config.chunk_size
             else:
-                self.net_config.chunk_size = self.net_config.timestep_chunk_size * self.n_agents
+                self.memory_config.chunk_size = (
+                    self.memory_config.timestep_chunk_size * self.n_agents
+                )
 
         self.encoder = Encoder(
-            self.n_block,
-            self.embed_dim,
-            self.n_head,
-            self.n_agents_per_chunk,
             self.net_config,
-            self.decay_scaling_factor,
+            self.memory_config,
+            self.n_agents_per_chunk,
         )
         self.decoder = Decoder(
-            self.n_block,
-            self.embed_dim,
-            self.n_head,
+            self.net_config,
+            self.memory_config,
             self.n_agents_per_chunk,
             self.action_dim,
-            self.net_config,
-            self.decay_scaling_factor,
             self.action_space_type,
         )
 
@@ -426,14 +411,19 @@ class SableNetwork(nn.Module):
             self.autoregressive_act,
         ) = self.setup_executor_trainer_fn()
 
-        # Decay kappa for each head
+        # Create dummy decay scale factor for FF Sable
+        if self.memory_config.type == "ff_sable":
+            self.memory_config.decay_scaling_factor = 1.0
         assert (
-            self.decay_scaling_factor >= 0 and self.decay_scaling_factor <= 1
+            self.memory_config.decay_scaling_factor >= 0
+            and self.memory_config.decay_scaling_factor <= 1
         ), "Decay scaling factor should be between 0 and 1"
+
+        # Decay kappa for each head
         self.decay_kappas = 1 - jnp.exp(
-            jnp.linspace(jnp.log(1 / 32), jnp.log(1 / 512), self.n_head)
+            jnp.linspace(jnp.log(1 / 32), jnp.log(1 / 512), self.net_config.n_head)
         )
-        self.decay_kappas = self.decay_kappas * self.decay_scaling_factor
+        self.decay_kappas = self.decay_kappas * self.memory_config.decay_scaling_factor
 
     def __call__(
         self,
@@ -529,17 +519,20 @@ class SableNetwork(nn.Module):
         """Setup the executor and trainer functions."""
 
         # Set the executing encoder function based on the chunkwise setting.
-        if self.net_config.use_chunkwise:
+        if self.memory_config.use_chunkwise:
             # Define the trainer encoder in chunkwise setting.
-            train_enc_fn = partial(train_encoder_chunkwise, chunk_size=self.net_config.chunk_size)  # noqa
+            train_enc_fn = partial(
+                train_encoder_chunkwise,  # noqa
+                chunk_size=self.memory_config.chunk_size,
+            )
             # Define the trainer decoder in chunkwise setting.
-            act_fn = partial(act_chunkwise, chunk_size=self.net_config.chunk_size)  # noqa
+            act_fn = partial(act_chunkwise, chunk_size=self.memory_config.chunk_size)  # noqa
             train_dec_fn = partial(train_decoder_fn, act_fn=act_fn, n_agents=self.n_agents)  # noqa
             # Define the executor encoder in chunkwise setting.
-            if self.net_config.type == "ff_sable":
+            if self.memory_config.type == "ff_sable":
                 execute_enc_fn = partial(
                     execute_encoder_chunkwise,  # noqa
-                    chunk_size=self.net_config.chunk_size,
+                    chunk_size=self.memory_config.chunk_size,
                 )
             else:
                 execute_enc_fn = partial(execute_encoder_parallel)  # noqa

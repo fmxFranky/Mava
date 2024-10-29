@@ -47,7 +47,7 @@ def train_encoder_chunkwise(
     batch_dim, seq_dim = obs.shape[:2]
     # Initialize the value location and observation representation
     v_loc = jnp.zeros((batch_dim, seq_dim, 1))
-    obs_rep = jnp.zeros((batch_dim, seq_dim, encoder.embed_dim))
+    obs_rep = jnp.zeros((batch_dim, seq_dim, encoder.net_config.embed_dim))
 
     # Apply the encoder per chunk
     num_chunks = seq_dim // chunk_size
@@ -259,7 +259,7 @@ def execute_encoder_chunkwise(
     batch_dim, agents_per_seq = obs.shape[:2]
     # Initialize the value location and observation representation
     v_loc = jnp.zeros((batch_dim, agents_per_seq, 1))
-    obs_rep = jnp.zeros((batch_dim, agents_per_seq, encoder.embed_dim))
+    obs_rep = jnp.zeros((batch_dim, agents_per_seq, encoder.net_config.embed_dim))
     # Apply the encoder per chunk
     num_chunks = agents_per_seq // chunk_size
     for chunk_id in range(0, num_chunks):
