@@ -68,7 +68,6 @@ class EncodeBlock(nn.Module):
 
 
 class Encoder(nn.Module):
-    obs_dim: int
     action_dim: int
     n_agent: int
     net_config: MATNetworkConfig
@@ -136,7 +135,6 @@ class DecodeBlock(nn.Module):
 
 
 class Decoder(nn.Module):
-    obs_dim: int
     action_dim: int
     n_agent: int
     action_space_type: str
@@ -199,7 +197,6 @@ class Decoder(nn.Module):
 
 
 class MultiAgentTransformer(nn.Module):
-    obs_dim: int
     action_dim: int
     n_agent: int
     net_config: MATNetworkConfig
@@ -217,13 +214,11 @@ class MultiAgentTransformer(nn.Module):
             raise ValueError(f"Invalid action space type: {self.action_space_type}")
 
         self.encoder = Encoder(
-            self.obs_dim,
             self.action_dim,
             self.n_agent,
             self.net_config,
         )
         self.decoder = Decoder(
-            self.obs_dim,
             self.action_dim,
             self.n_agent,
             self.action_space_type,

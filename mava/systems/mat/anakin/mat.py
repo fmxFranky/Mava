@@ -368,7 +368,6 @@ def learner_setup(
 
     # Define network and optimiser.
     actor_network = MultiAgentTransformer(
-        obs_dim=init_x.agents_view.shape[-1],
         action_dim=env.action_dim,
         n_agent=config.system.num_agents,
         net_config=config.network,
