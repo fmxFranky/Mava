@@ -64,10 +64,10 @@ class SimpleRetention(nn.Module):
         k_proj = k_proj.transpose(0, -1, -2)
 
         # Compute next hidden state
-        #TODO: revert to the original once experiments are done
-        if False: #self.memory_config.type == "ff_sable":
+        if self.memory_config.type == "ff_sable":
             # No decay matrix or xi for FF Sable since we don't have temporal dependencies.
             decay_matrix = jnp.ones((batch, chunk_size, chunk_size))
+            decay_matrix = self._causal_mask(decay_matrix)
             xi = jnp.ones((batch, chunk_size, 1))
             next_hstate = (k_proj @ v_proj) + hstate
         else:
@@ -118,11 +118,16 @@ class SimpleRetention(nn.Module):
         )
 
         # Apply a causal mask over agents if full self-retention is disabled
-        if not self.full_self_retention:
-            mask_agents = jnp.tril(jnp.ones((decay_matrix.shape[1], decay_matrix.shape[1])))
-            decay_matrix = mask_agents[None, :, :] * decay_matrix
+        decay_matrix = self._causal_mask(decay_matrix)
 
         return decay_matrix
+
+    def _causal_mask(self, matrix: Array) -> Array:
+        """Applies a causal mask to the input matrix."""
+        if not self.full_self_retention:
+            mask_agents = jnp.tril(jnp.ones((matrix.shape[1], matrix.shape[1])))
+            matrix = mask_agents[None, :, :] * matrix
+        return matrix
 
     def _get_decay_matrix_mask_timestep(self, ts_dones: Array) -> Array:
         """Generates a mask over the timesteps based on the done status of agents."""
