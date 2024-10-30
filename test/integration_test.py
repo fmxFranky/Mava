@@ -33,8 +33,10 @@ ppo_systems = [
     "ppo.anakin.rec_ippo",
     "ppo.anakin.rec_mappo",
 ]
+
+sac_systems = ["sac.anakin.ff_isac", "sac.anakin.ff_masac", "sac.anakin.ff_hasac"]
 q_learning_systems = ["q_learning.anakin.rec_iql", "q_learning.anakin.rec_qmix"]
-sac_systems = ["sac.anakin.ff_isac", "sac.anakin.ff_masac"]
+transformer_systems = ["mat.anakin.mat"]
 sable_systems = ["sable.anakin.ff_sable", "sable.anakin.rec_sable"]
 
 discrete_envs = ["gigastep", "lbf", "matrax", "rware", "smax"]
@@ -115,10 +117,23 @@ def test_sac_system(fast_config: dict, system_path: str) -> None:
     _run_system(system_path, cfg)
 
 
+@pytest.mark.parametrize("system_path", transformer_systems)
+def test_transformer_system(fast_config: dict, system_path: str) -> None:
+    """Test transformer systems on random envs."""
+    _, _, system_name = system_path.split(".")
+    env = random.choice(continuous_envs + discrete_envs)
+
+    with initialize(version_base=None, config_path=config_path):
+        cfg = compose(config_name=f"{system_name}", overrides=[f"env={env}"])
+        cfg = _get_fast_config(cfg, fast_config)
+
+    _run_system(system_path, cfg)
+
+
 @pytest.mark.parametrize("env_name", discrete_envs)
 def test_discrete_env(fast_config: dict, env_name: str) -> None:
     """Test all discrete envs on random systems."""
-    system_path = random.choice(ppo_systems + q_learning_systems + sable_systems)
+    system_path = random.choice(ppo_systems + q_learning_systems)
     _, _, system_name = system_path.split(".")
 
     with initialize(version_base=None, config_path=config_path):

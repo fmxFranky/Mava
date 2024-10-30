@@ -23,10 +23,10 @@ from flax.linen.initializers import orthogonal
 from omegaconf import DictConfig
 
 from mava.networks.retention import MultiScaleRetention
+from mava.networks.torsos import SwiGLU
 from mava.networks.utils.sable.discrete_trainer_executor import *  # noqa
 from mava.systems.sable.types import HiddenStates, SableNetworkConfig
 from mava.types import Observation
-from mava.utils.sable_utils import SwiGLU
 
 
 class EncodeBlock(nn.Module):
