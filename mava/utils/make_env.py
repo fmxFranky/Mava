@@ -14,6 +14,7 @@
 
 from typing import Dict, Tuple, Type
 
+import jax
 import jaxmarl
 import jumanji
 import matrax
@@ -46,6 +47,7 @@ from mava.wrappers import (
     RecordEpisodeMetrics,
     RwareWrapper,
     SmaxWrapper,
+    VectorConnectorWrapper,
 )
 from mava.wrappers.jaxmarl import JaxMarlWrapper
 
@@ -55,7 +57,7 @@ _jumanji_registry = {
     "LevelBasedForaging-v0": {"generator": LbfRandomGenerator, "wrapper": LbfWrapper},
     "MaConnector-v2": {
         "generator": ConnectorRandomGenerator,
-        "wrapper": ConnectorWrapper,
+        "wrapper": {"pixel": ConnectorWrapper, "vector": VectorConnectorWrapper},
     },
     "Cleaner-v0": {"generator": CleanerRandomGenerator, "wrapper": CleanerWrapper},
 }
@@ -103,7 +105,14 @@ def make_jumanji_env(
     # Config generator and select the wrapper.
     generator = _jumanji_registry[env_name]["generator"]
     generator = generator(**config.env.scenario.task_config)
-    wrapper = _jumanji_registry[env_name]["wrapper"]
+
+    # If observation_type is in the config use the corresponding wrapper and make sure
+    # implicit_agent_id is set to False.
+    if hasattr(config.env, "observation_type"):
+        wrapper = _jumanji_registry[env_name]["wrapper"][config.env.observation_type]
+        config.env.implicit_agent_id = False
+    else:
+        wrapper = _jumanji_registry[env_name]["wrapper"]
 
     # Create envs.
     env_config = {**config.env.kwargs, **config.env.scenario.env_kwargs}
@@ -111,6 +120,8 @@ def make_jumanji_env(
     eval_env = jumanji.make(env_name, generator=generator, **env_config)
     train_env = wrapper(train_env, add_global_state=add_global_state)
     eval_env = wrapper(eval_env, add_global_state=add_global_state)
+
+    jax.debug.print("Implicit Agent ID: {x}", x=config.env.implicit_agent_id)
 
     train_env, eval_env = add_extra_wrappers(train_env, eval_env, config)
     return train_env, eval_env
