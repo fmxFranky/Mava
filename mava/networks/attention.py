@@ -21,19 +21,19 @@ from flax.linen.initializers import orthogonal
 
 
 class SelfAttention(nn.Module):
-    n_embd: int
+    embed_dim: int
     n_head: int
     n_agent: int
     masked: bool = False
 
     def setup(self) -> None:
-        assert self.n_embd % self.n_head == 0
-        self.key = nn.Dense(self.n_embd, kernel_init=orthogonal(0.01))
-        self.query = nn.Dense(self.n_embd, kernel_init=orthogonal(0.01))
-        self.value = nn.Dense(self.n_embd, kernel_init=orthogonal(0.01))
+        assert self.embed_dim % self.n_head == 0
+        self.key = nn.Dense(self.embed_dim, kernel_init=orthogonal(0.01))
+        self.query = nn.Dense(self.embed_dim, kernel_init=orthogonal(0.01))
+        self.value = nn.Dense(self.embed_dim, kernel_init=orthogonal(0.01))
 
         # output projection
-        self.proj = nn.Dense(self.n_embd, kernel_init=orthogonal(0.01))
+        self.proj = nn.Dense(self.embed_dim, kernel_init=orthogonal(0.01))
 
         # causal mask to ensure that attention is only applied to the left in the input sequence
         self.mask = jnp.tril(jnp.ones((self.n_agent + 1, self.n_agent + 1)))

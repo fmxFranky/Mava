@@ -39,6 +39,6 @@ class MATNetworkConfig:
 
     n_block: int
     n_head: int
-    n_embd: int
+    embed_dim: int
     use_swiglu: bool
     use_rmsnorm: bool

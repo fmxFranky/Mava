@@ -32,15 +32,15 @@ from mava.types import MavaObservation
 from mava.utils.network_utils import _CONTINUOUS, _DISCRETE
 
 
-def _make_mlp(n_embd: int, use_swiglu: bool) -> nn.Module:
+def _make_mlp(embed_dim: int, use_swiglu: bool) -> nn.Module:
     if use_swiglu:
-        return SwiGLU(n_embd, n_embd)
+        return SwiGLU(embed_dim, embed_dim)
 
     return nn.Sequential(
         [
-            nn.Dense(n_embd, kernel_init=orthogonal(jnp.sqrt(2))),
+            nn.Dense(embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
             nn.gelu,
-            nn.Dense(n_embd, kernel_init=orthogonal(0.01)),
+            nn.Dense(embed_dim, kernel_init=orthogonal(0.01)),
         ],
     )
 
@@ -56,10 +56,10 @@ class EncodeBlock(nn.Module):
         self.ln2 = ln()
 
         self.attn = SelfAttention(
-            self.net_config.n_embd, self.net_config.n_head, self.n_agent, self.masked
+            self.net_config.embed_dim, self.net_config.n_head, self.n_agent, self.masked
         )
 
-        self.mlp = _make_mlp(self.net_config.n_embd, self.net_config.use_swiglu)
+        self.mlp = _make_mlp(self.net_config.embed_dim, self.net_config.use_swiglu)
 
     def __call__(self, x: chex.Array) -> chex.Array:
         x = self.ln1(x + self.attn(x, x, x))
@@ -76,7 +76,11 @@ class Encoder(nn.Module):
         ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
 
         self.obs_encoder = nn.Sequential(
-            [ln(), nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
+            [
+                ln(),
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.gelu,
+            ],
         )
         self.ln = ln()
         self.blocks = nn.Sequential(
@@ -90,7 +94,7 @@ class Encoder(nn.Module):
         )
         self.head = nn.Sequential(
             [
-                nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
                 nn.gelu,
                 ln(),
                 nn.Dense(1, kernel_init=orthogonal(0.01)),
@@ -119,13 +123,13 @@ class DecodeBlock(nn.Module):
         self.ln3 = ln()
 
         self.attn1 = SelfAttention(
-            self.net_config.n_embd, self.net_config.n_head, self.n_agent, self.masked
+            self.net_config.embed_dim, self.net_config.n_head, self.n_agent, self.masked
         )
         self.attn2 = SelfAttention(
-            self.net_config.n_embd, self.net_config.n_head, self.n_agent, self.masked
+            self.net_config.embed_dim, self.net_config.n_head, self.n_agent, self.masked
         )
 
-        self.mlp = _make_mlp(self.net_config.n_embd, self.net_config.use_swiglu)
+        self.mlp = _make_mlp(self.net_config.embed_dim, self.net_config.use_swiglu)
 
     def __call__(self, x: chex.Array, rep_enc: chex.Array) -> chex.Array:
         x = self.ln1(x + self.attn1(x, x, x))
@@ -147,7 +151,9 @@ class Decoder(nn.Module):
         self.action_encoder = nn.Sequential(
             [
                 nn.Dense(
-                    self.net_config.n_embd, use_bias=use_bias, kernel_init=orthogonal(jnp.sqrt(2))
+                    self.net_config.embed_dim,
+                    use_bias=use_bias,
+                    kernel_init=orthogonal(jnp.sqrt(2)),
                 ),
                 nn.gelu,
             ],
@@ -162,7 +168,11 @@ class Decoder(nn.Module):
         )
 
         self.obs_encoder = nn.Sequential(
-            [ln(), nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
+            [
+                ln(),
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.gelu,
+            ],
         )
         self.ln = ln()
         self.blocks = [
@@ -175,7 +185,7 @@ class Decoder(nn.Module):
         ]
         self.head = nn.Sequential(
             [
-                nn.Dense(self.net_config.n_embd, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
                 nn.gelu,
                 ln(),
                 nn.Dense(self.action_dim, kernel_init=orthogonal(0.01)),
