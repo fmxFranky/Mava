@@ -64,7 +64,8 @@ class SimpleRetention(nn.Module):
         k_proj = k_proj.transpose(0, -1, -2)
 
         # Compute next hidden state
-        if self.memory_config.type == "ff_sable":
+        #TODO: revert to the original once experiments are done
+        if False: #self.memory_config.type == "ff_sable":
             # No decay matrix or xi for FF Sable since we don't have temporal dependencies.
             decay_matrix = jnp.ones((batch, chunk_size, chunk_size))
             xi = jnp.ones((batch, chunk_size, 1))
