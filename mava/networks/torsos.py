@@ -77,16 +77,26 @@ class CNNTorso(nn.Module):
 
 
 class SwiGLU(nn.Module):
-    ffn_dim: int
+    """SwiGLU module.
+    A gated variation of a standard feedforward layer using a Swish activation function.
+    For more details see: https://arxiv.org/abs/2002.05202
+    """
+
+    hidden_dim: int
     embed_dim: int
 
     def setup(self) -> None:
-        self.W_1 = self.param("W_1", nn.initializers.zeros, (self.embed_dim, self.ffn_dim))
-        self.W_G = self.param("W_G", nn.initializers.zeros, (self.embed_dim, self.ffn_dim))
-        self.W_2 = self.param("W_2", nn.initializers.zeros, (self.ffn_dim, self.embed_dim))
+        self.W_linear = self.param(
+            "W_linear", nn.initializers.zeros, (self.embed_dim, self.hidden_dim)
+        )
+        self.W_gate = self.param("W_gate", nn.initializers.zeros, (self.embed_dim, self.hidden_dim))
+        self.W_output = self.param(
+            "W_output", nn.initializers.zeros, (self.hidden_dim, self.embed_dim)
+        )
 
     def __call__(self, x: chex.Array) -> chex.Array:
-        return (jax.nn.swish(x @ self.W_G) * (x @ self.W_1)) @ self.W_2
+        gated_output = jax.nn.swish(x @ self.W_gate) * (x @ self.W_linear)
+        return gated_output @ self.W_output
 
 
 def _parse_activation_fn(activation_fn_name: str) -> Callable[[chex.Array], chex.Array]:
