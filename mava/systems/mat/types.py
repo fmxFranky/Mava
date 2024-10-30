@@ -13,14 +13,16 @@
 # limitations under the License.
 
 from dataclasses import dataclass
+from typing import Callable, Tuple
 
 import chex
+from chex import Array, PRNGKey
 from flax.core.frozen_dict import FrozenDict
 from jumanji.types import TimeStep
 from optax._src.base import OptState
 from typing_extensions import NamedTuple
 
-from mava.types import State
+from mava.types import MavaObservation, State
 
 
 class LearnerState(NamedTuple):
@@ -42,3 +44,10 @@ class MATNetworkConfig:
     embed_dim: int
     use_swiglu: bool
     use_rmsnorm: bool
+
+
+ExecutionApply = Callable[
+    [FrozenDict, MavaObservation, PRNGKey],
+    Tuple[Array, Array, Array, Array],
+]
+TrainingApply = Callable[[FrozenDict, MavaObservation, Array, PRNGKey], Tuple[Array, Array, Array]]

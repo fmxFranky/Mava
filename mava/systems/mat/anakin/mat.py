@@ -31,11 +31,9 @@ from rich.pretty import pprint
 
 from mava.evaluator import ActorState, get_eval_fn
 from mava.networks.mat_network import MultiAgentTransformer
-from mava.systems.mat.types import LearnerState
+from mava.systems.mat.types import ExecutionApply, LearnerState, TrainingApply
 from mava.systems.ppo.types import PPOTransition
 from mava.types import (
-    ActorApply,
-    CriticApply,
     ExperimentOutput,
     LearnerFn,
     MarlEnv,
@@ -57,7 +55,7 @@ from mava.wrappers.episode_metrics import get_final_step_metrics
 
 def get_learner_fn(
     env: MarlEnv,
-    apply_fns: Tuple[ActorApply, CriticApply],
+    apply_fns: Tuple[ExecutionApply, TrainingApply],
     update_fn: optax.TransformUpdateFn,
     config: DictConfig,
 ) -> LearnerFn[LearnerState]:
