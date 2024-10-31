@@ -390,6 +390,20 @@ class SableNetwork(nn.Module):
                     self.memory_config.timestep_chunk_size * self.n_agents
                 )
 
+        # Create dummy decay scale factor for FF Sable
+        if self.memory_config.type == "ff_sable":
+            self.memory_config.decay_scaling_factor = 1.0
+        assert (
+            self.memory_config.decay_scaling_factor >= 0
+            and self.memory_config.decay_scaling_factor <= 1
+        ), "Decay scaling factor should be between 0 and 1"
+
+        # Decay kappa for each head
+        self.decay_kappas = 1 - jnp.exp(
+            jnp.linspace(jnp.log(1 / 32), jnp.log(1 / 512), self.net_config.n_head)
+        )
+        self.decay_kappas = self.decay_kappas * self.memory_config.decay_scaling_factor
+
         self.encoder = Encoder(
             self.net_config,
             self.memory_config,
@@ -410,20 +424,6 @@ class SableNetwork(nn.Module):
             self.execute_encoder_fn,
             self.autoregressive_act,
         ) = self.setup_executor_trainer_fn()
-
-        # Create dummy decay scale factor for FF Sable
-        if self.memory_config.type == "ff_sable":
-            self.memory_config.decay_scaling_factor = 1.0
-        assert (
-            self.memory_config.decay_scaling_factor >= 0
-            and self.memory_config.decay_scaling_factor <= 1
-        ), "Decay scaling factor should be between 0 and 1"
-
-        # Decay kappa for each head
-        self.decay_kappas = 1 - jnp.exp(
-            jnp.linspace(jnp.log(1 / 32), jnp.log(1 / 512), self.net_config.n_head)
-        )
-        self.decay_kappas = self.decay_kappas * self.memory_config.decay_scaling_factor
 
     def __call__(
         self,
