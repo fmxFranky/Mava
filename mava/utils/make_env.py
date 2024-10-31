@@ -121,8 +121,6 @@ def make_jumanji_env(
     train_env = wrapper(train_env, add_global_state=add_global_state)
     eval_env = wrapper(eval_env, add_global_state=add_global_state)
 
-    jax.debug.print("Implicit Agent ID: {x}", x=config.env.implicit_agent_id)
-
     train_env, eval_env = add_extra_wrappers(train_env, eval_env, config)
     return train_env, eval_env
 
