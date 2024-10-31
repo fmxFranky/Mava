@@ -419,6 +419,7 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
             "step_count",
         )
 
+        # 2 sets of tiles in fov (blockers and targets) + xy position of agent and target
         tiles_in_fov = (self.fov * 2 + 1) ** 2
         single_agent_obs = 4 + tiles_in_fov * 2
         agents_view = specs.BoundedArray(
