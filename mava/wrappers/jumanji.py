@@ -357,8 +357,8 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
             # group positions and paths
             blockers = jnp.where(positions, 1, jnp.where(paths, -1, 0))
 
-            position_per_agent = jnp.where(grid == POSITION, True, False)
-            target_per_agent = jnp.where(grid == TARGET, True, False)
+            position_per_agent = grid == POSITION
+            target_per_agent = grid == TARGET
 
             # group agents own target and other targets
             combined_targets = jnp.where(target_per_agent, 1, jnp.where(targets, -1, 0))
