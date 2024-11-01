@@ -595,8 +595,8 @@ def run_experiment(_config: DictConfig) -> float:
         ), "Rollout length must be divisible by recurrent chunk size."
 
         assert (
-        config.arch.num_envs % config.system.num_minibatches == 0
-    ), "Number of envs must be divisibile by number of minibatches."
+            config.arch.num_envs % config.system.num_minibatches == 0
+        ), "Number of envs must be divisibile by number of minibatches."
 
     # Create the enviroments for train and eval.
     env, eval_env = environments.make(config)
