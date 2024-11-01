@@ -147,15 +147,7 @@ def get_learner_fn(
         )
 
         # Calculate advantage
-        (
-            params,
-            opt_states,
-            key,
-            env_state,
-            last_timestep,
-            last_done,
-            hstates,
-        ) = learner_state
+        params, opt_states, key, env_state, last_timestep, last_done, hstates = learner_state
 
         # Add a batch dimension to the observation.
         batched_last_observation = tree.map(lambda x: x[jnp.newaxis, :], last_timestep.observation)
