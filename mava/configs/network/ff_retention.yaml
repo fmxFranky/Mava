@@ -9,4 +9,4 @@ memory_config:
   # --- chunking ---
   # Chunking the sequence into smaller parts to fit into memory.
   use_chunkwise: False # Whether to chunk the sequence.
-  agents_chunk_size: 2 # Size of the chunk: calculated over agents dim.
+  agents_chunk_size: 2 # Size of the chunk: calculated over agents dim. This directly sets the sequence length for chunkwise retention
