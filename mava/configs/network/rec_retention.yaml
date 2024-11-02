@@ -13,5 +13,5 @@ memory_config:
   # --- Chunking ---
   # Chunking the sequence into smaller parts to fit into memory.
   use_chunkwise: False # Whether to chunk the sequence.
-  timestep_chunk_size: 32 # Size of the chunk: calculated over timesteps dim. 
+  timestep_chunk_size: 32 # Size of the chunk: calculated over timesteps dim.
   # For example a chunksize of 2 results in a sequence length of 2 * num_agents because there num_agents observations within a timestep
