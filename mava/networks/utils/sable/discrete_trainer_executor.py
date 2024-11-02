@@ -26,11 +26,11 @@ def train_encoder_parallel(
     obs: chex.Array,
     hstate: chex.Array,
     dones: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Parallel encoding for discrete action spaces."""
     # Apply the encoder
-    v_loc, obs_rep, updated_hstate = encoder(obs, hstate, dones, timestep_id)
+    v_loc, obs_rep, updated_hstate = encoder(obs, hstate, dones, step_count)
     return v_loc, obs_rep, updated_hstate
 
 
@@ -39,7 +39,7 @@ def train_encoder_chunkwise(
     obs: chex.Array,
     hstate: chex.Array,
     dones: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
     chunk_size: int,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Chunkwise encoding for discrete action spaces."""
@@ -56,14 +56,14 @@ def train_encoder_chunkwise(
         end_idx = (chunk_id + 1) * chunk_size
         chunk_obs = obs[:, start_idx:end_idx]
         chunk_dones = dones[:, start_idx:end_idx]
-        chunk_timestep_id = timestep_id[:, start_idx:end_idx]
+        chunk_timestep_id = step_count[:, start_idx:end_idx]
         # Apply parallel encoding per chunk
         chunk_v_loc, chunk_obs_rep, hstate = train_encoder_parallel(
             encoder=encoder,
             obs=chunk_obs,
             hstate=hstate,
             dones=chunk_dones,
-            timestep_id=chunk_timestep_id,
+            step_count=chunk_timestep_id,
         )
         v_loc = v_loc.at[:, start_idx:end_idx].set(chunk_v_loc)
         obs_rep = obs_rep.at[:, start_idx:end_idx].set(chunk_obs_rep)
@@ -79,7 +79,7 @@ def train_decoder_fn(
     legal_actions: chex.Array,
     hstates: chex.Array,
     dones: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
     n_agents: int,
     rng_key: Optional[chex.PRNGKey] = None,
 ) -> Tuple[chex.Array, chex.Array]:
@@ -96,7 +96,7 @@ def train_decoder_fn(
         shifted_actions=shifted_actions,
         hstates=hstates,
         dones=dones,
-        timestep_id=timestep_id,
+        step_count=step_count,
         legal_actions=legal_actions,
     )
 
@@ -126,7 +126,7 @@ def act_parallel(
     shifted_actions: chex.Array,
     hstates: Tuple[chex.Array, chex.Array],
     dones: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
     legal_actions: chex.Array,
 ) -> Tuple[chex.Array, Tuple[chex.Array, chex.Array]]:
     del legal_actions
@@ -136,7 +136,7 @@ def act_parallel(
         obs_rep=obs_rep,
         hstates=hstates,
         dones=dones,
-        timestep_id=timestep_id,
+        step_count=step_count,
     )
     return logit, updated_hstates
 
@@ -147,7 +147,7 @@ def act_chunkwise(
     shifted_actions: chex.Array,
     hstates: Tuple[chex.Array, chex.Array],
     dones: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
     legal_actions: chex.Array,
     chunk_size: int,
 ) -> Tuple[chex.Array, Tuple[chex.Array, chex.Array]]:
@@ -161,7 +161,7 @@ def act_chunkwise(
         chunked_obs_rep = obs_rep[:, start_idx:end_idx]
         chunk_shifted_actions = shifted_actions[:, start_idx:end_idx]
         chunk_dones = dones[:, start_idx:end_idx]
-        chunk_timestep_id = timestep_id[:, start_idx:end_idx]
+        chunk_timestep_id = step_count[:, start_idx:end_idx]
         # Apply parallel encoding per chunk
         chunk_logit, hstates = act_parallel(
             decoder=decoder,
@@ -169,7 +169,7 @@ def act_chunkwise(
             shifted_actions=chunk_shifted_actions,
             hstates=hstates,
             dones=chunk_dones,
-            timestep_id=chunk_timestep_id,
+            step_count=chunk_timestep_id,
             legal_actions=legal_actions,
         )
         logit = logit.at[:, start_idx:end_idx].set(chunk_logit)
@@ -211,7 +211,7 @@ def init_sable(
 ) -> chex.Array:
     """Initializating the network: Applying non chunkwise encoding-decoding."""
     # Get the observation, legal actions, and timestep id
-    obs, legal_actions, timestep_id = (
+    obs, legal_actions, step_count = (
         obs_carry.agents_view,
         obs_carry.action_mask,
         obs_carry.step_count,
@@ -219,7 +219,7 @@ def init_sable(
 
     # Apply the encoder
     v_loc, obs_rep, _ = execute_encoder_parallel(
-        encoder=encoder, obs=obs, decayed_hstate=hstates[0], timestep_id=timestep_id
+        encoder=encoder, obs=obs, decayed_hstate=hstates[0], step_count=step_count
     )
 
     # Apply the decoder
@@ -228,7 +228,7 @@ def init_sable(
         obs_rep=obs_rep,
         legal_actions=legal_actions,
         hstates=hstates[1],
-        timestep_id=timestep_id,
+        step_count=step_count,
         key=key,
     )
 
@@ -239,11 +239,11 @@ def execute_encoder_parallel(
     encoder: nn.Module,
     obs: chex.Array,
     decayed_hstate: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Parallel encoding for discrete action spaces."""
     # Apply the encoder
-    v_loc, obs_rep, updated_hstate = encoder.recurrent(obs, decayed_hstate, timestep_id)
+    v_loc, obs_rep, updated_hstate = encoder.recurrent(obs, decayed_hstate, step_count)
     return v_loc, obs_rep, updated_hstate
 
 
@@ -251,7 +251,7 @@ def execute_encoder_chunkwise(
     encoder: nn.Module,
     obs: chex.Array,
     decayed_hstate: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
     chunk_size: int,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Chunkwise encoding for Non-memory Sable and for discrete action spaces."""
@@ -266,13 +266,13 @@ def execute_encoder_chunkwise(
         start_idx = chunk_id * chunk_size
         end_idx = (chunk_id + 1) * chunk_size
         chunk_obs = obs[:, start_idx:end_idx]
-        chunk_timestep_id = timestep_id[:, start_idx:end_idx]
+        chunk_timestep_id = step_count[:, start_idx:end_idx]
         # Apply parallel encoding per chunk
         chunk_v_loc, chunk_obs_rep, decayed_hstate = execute_encoder_parallel(
             encoder=encoder,
             obs=chunk_obs,
             decayed_hstate=decayed_hstate,
-            timestep_id=chunk_timestep_id,
+            step_count=chunk_timestep_id,
         )
         v_loc = v_loc.at[:, start_idx:end_idx].set(chunk_v_loc)
         obs_rep = obs_rep.at[:, start_idx:end_idx].set(chunk_obs_rep)
@@ -285,7 +285,7 @@ def autoregressive_act(
     obs_rep: chex.Array,
     hstates: chex.Array,
     legal_actions: chex.Array,
-    timestep_id: chex.Array,
+    step_count: chex.Array,
     key: chex.PRNGKey,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     # Get the batch size, sequence length, and action dimension
@@ -307,7 +307,7 @@ def autoregressive_act(
             action=shifted_actions[:, i : i + 1, :],
             obs_rep=obs_rep[:, i : i + 1, :],
             hstates=hstates,
-            timestep_id=timestep_id[:, i : i + 1],
+            step_count=step_count[:, i : i + 1],
         )
         # Mask the logits for illegal actions
         masked_logits = jnp.where(

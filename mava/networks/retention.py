@@ -271,13 +271,13 @@ class MultiScaleRetention(nn.Module):
         value: Array,
         hstate: Array,
         dones: Array,
-        timestep_id: Array,
+        step_count: Array,
     ) -> Tuple[Array, Array]:
         """Chunkwise (default) representation of the multi-scale retention mechanism"""
         B, C, _ = value.shape
 
         # Positional encoding of the current step
-        key, query, value = self.pe(key, query, value, timestep_id)
+        key, query, value = self.pe(key, query, value, step_count)
 
         # Per head retention
         ret_output = jnp.zeros((B, C, self.head_size), dtype=value.dtype)
@@ -298,13 +298,13 @@ class MultiScaleRetention(nn.Module):
         return output, hs
 
     def recurrent(
-        self, key_n: Array, query_n: Array, value_n: Array, hstate: Array, timestep_id: Array
+        self, key_n: Array, query_n: Array, value_n: Array, hstate: Array, step_count: Array
     ) -> Tuple[Array, Array]:
         """Recurrent representation of the multi-scale retention mechanism"""
         B, S, _ = value_n.shape
 
         # Positional encoding of the current step
-        key_n, query_n, value_n = self.pe(key_n, query_n, value_n, timestep_id)
+        key_n, query_n, value_n = self.pe(key_n, query_n, value_n, step_count)
 
         ret_output = jnp.zeros((B, S, self.head_size), dtype=value_n.dtype)
         hs = jnp.zeros_like(hstate)  # hidden state per head
