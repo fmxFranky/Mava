@@ -32,8 +32,8 @@ class SableNetworkConfig(NamedTuple):
 class HiddenStates(NamedTuple):
     """Hidden states for the encoder and decoder."""
 
-    encoder_hstate: Array
-    decoder_hstate: Tuple[Array, Array]
+    encoder: Array
+    decoder: Tuple[Array, Array]
 
 
 class RecLearnerState(NamedTuple):

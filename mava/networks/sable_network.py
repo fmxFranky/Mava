@@ -460,7 +460,7 @@ class SableNetwork(nn.Module):
         )
 
         # Pack the hidden states
-        updated_hs = HiddenStates(encoder_hstate=updated_enc_hs, decoder_hstate=updated_dec_hs)
+        updated_hs = HiddenStates(encoder=updated_enc_hs, decoder=updated_dec_hs)
         return output_actions, output_actions_log, v_loc, updated_hs
 
     def init_net(

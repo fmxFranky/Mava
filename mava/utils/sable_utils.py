@@ -58,9 +58,7 @@ def get_init_hidden_state(actor_net_config: SableNetworkConfig, batch_size: int)
     dec_hs_self_retm = jnp.zeros(hidden_state_shape)
     dec_hs_cross_retn = jnp.zeros(hidden_state_shape)
     enc_hs = jnp.zeros(hidden_state_shape)
-    hidden_states = HiddenStates(
-        encoder_hstate=enc_hs, decoder_hstate=(dec_hs_self_retm, dec_hs_cross_retn)
-    )
+    hidden_states = HiddenStates(encoder=enc_hs, decoder=(dec_hs_self_retm, dec_hs_cross_retn))
     return hidden_states
 
 

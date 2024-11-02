@@ -195,10 +195,10 @@ class Checkpointer:
         if restore_hstates and THiddenState is not None:
             if "hidden_state" in restored_learner_state_raw.keys():
                 restored_hstates = THiddenState(
-                    encoder_hstate=restored_learner_state_raw["hidden_state"]["encoder_hstate"],
-                    decoder_hstate=(
-                        restored_learner_state_raw["hidden_state"]["decoder_hstate"][0],
-                        restored_learner_state_raw["hidden_state"]["decoder_hstate"][1],
+                    encoder=restored_learner_state_raw["hidden_state"]["encoder"],
+                    decoder=(
+                        restored_learner_state_raw["hidden_state"]["decoder"][0],
+                        restored_learner_state_raw["hidden_state"]["decoder"][1],
                     ),
                 )
             else:
