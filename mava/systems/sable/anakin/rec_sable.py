@@ -304,26 +304,24 @@ def get_learner_fn(
             batch_size = config.arch.num_envs
             batch_perm = jax.random.permutation(batch_shuffle_key, batch_size)
             batch = (traj_batch, advantages, targets)
-            batch = jax.tree_util.tree_map(lambda x: jnp.take(x, batch_perm, axis=1), batch)
+            batch = tree.map(lambda x: jnp.take(x, batch_perm, axis=1), batch)
 
             # Shuffle hidden states
-            prev_hstates = jax.tree_util.tree_map(
-                lambda x: jnp.take(x, batch_perm, axis=0), prev_hstates
-            )
+            prev_hstates = tree.map(lambda x: jnp.take(x, batch_perm, axis=0), prev_hstates)
 
             # Shuffle agents
             agent_perm = jax.random.permutation(agent_shuffle_key, config.system.num_agents)
-            batch = jax.tree_util.tree_map(lambda x: jnp.take(x, agent_perm, axis=2), batch)
+            batch = tree.map(lambda x: jnp.take(x, agent_perm, axis=2), batch)
 
             # CONCATENATE TIME AND AGENTS
-            batch = jax.tree_util.tree_map(concat_time_and_agents, batch)
+            batch = tree.map(concat_time_and_agents, batch)
 
             # SPLIT INTO MINIBATCHES
-            minibatches = jax.tree_util.tree_map(
+            minibatches = tree.map(
                 lambda x: jnp.reshape(x, (config.system.num_minibatches, -1, *x.shape[1:])),
                 batch,
             )
-            prev_hs_minibatch = jax.tree_util.tree_map(
+            prev_hs_minibatch = tree.map(
                 lambda x: jnp.reshape(x, (config.system.num_minibatches, -1, *x.shape[1:])),
                 prev_hstates,
             )

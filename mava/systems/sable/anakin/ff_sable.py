@@ -291,12 +291,10 @@ def get_learner_fn(
 
             # Shuffle agents
             agent_perm = jax.random.permutation(agent_shuffle_key, config.system.num_agents)
-            shuffled_batch = jax.tree_util.tree_map(
-                lambda x: jnp.take(x, agent_perm, axis=1), shuffled_batch
-            )
+            shuffled_batch = tree.map(lambda x: jnp.take(x, agent_perm, axis=1), shuffled_batch)
 
             # SPLIT INTO MINIBATCHES
-            minibatches = jax.tree_util.tree_map(
+            minibatches = tree.map(
                 lambda x: jnp.reshape(x, (config.system.num_minibatches, -1, *x.shape[1:])),
                 shuffled_batch,
             )
