@@ -24,7 +24,13 @@ from omegaconf import DictConfig
 
 from mava.networks.retention import MultiScaleRetention
 from mava.networks.torsos import SwiGLU
-from mava.networks.utils.sable.discrete_trainer_executor import *  # noqa
+from mava.networks.utils.sable import (
+    autoregressive_act,
+    execute_encoder_fn,
+    init_sable,
+    train_decoder_fn,
+    train_encoder_fn,
+)
 from mava.systems.sable.types import HiddenStates, SableNetworkConfig
 from mava.types import Observation
 
@@ -338,6 +344,7 @@ class SableNetwork(nn.Module):
 
     n_agents: int
     action_dim: int
+    rollout_length: int
     net_config: SableNetworkConfig
     memory_config: DictConfig
     action_space_type: str = "discrete"
@@ -347,22 +354,26 @@ class SableNetwork(nn.Module):
             "discrete",
         ], "Invalid action space type"
 
-        # Set the chunksize differently in ff and recurrent sable
         self.n_agents_per_chunk = self.n_agents
-        if self.memory_config.use_chunkwise:
-            if self.memory_config.type == "ff_sable":
+        if self.memory_config.type == "ff_sable":
+            self.memory_config.decay_scaling_factor = (
+                1.0  # Create a dummy decay factor for FF Sable
+            )
+            if self.memory_config.use_chunkwise:
                 self.memory_config.chunk_size = self.memory_config.agents_chunk_size
                 err = "Number of agents should be divisible by chunk size"
                 assert self.n_agents % self.memory_config.chunk_size == 0, err
                 self.n_agents_per_chunk = self.memory_config.chunk_size
             else:
+                self.memory_config.chunk_size = self.n_agents
+        else:
+            if self.memory_config.use_chunkwise:
                 self.memory_config.chunk_size = (
                     self.memory_config.timestep_chunk_size * self.n_agents
                 )
+            else:
+                self.memory_config.chunk_size = self.rollout_length * self.n_agents
 
-        # Create dummy decay scale factor for FF Sable
-        if self.memory_config.type == "ff_sable":
-            self.memory_config.decay_scaling_factor = 1.0
         assert (
             self.memory_config.decay_scaling_factor >= 0
             and self.memory_config.decay_scaling_factor <= 1
@@ -471,7 +482,7 @@ class SableNetwork(nn.Module):
     ) -> Any:
         """Initializating the network."""
 
-        return init_sable(  # noqa
+        return init_sable(
             encoder=self.encoder,
             decoder=self.decoder,
             obs_carry=obs_carry,
@@ -482,30 +493,17 @@ class SableNetwork(nn.Module):
     def setup_executor_trainer_fn(self) -> Tuple:
         """Setup the executor and trainer functions."""
 
-        # Set the executing encoder function based on the chunkwise setting.
-        if self.memory_config.use_chunkwise:
-            # Define the trainer encoder in chunkwise setting.
-            train_enc_fn = partial(
-                train_encoder_chunkwise,  # noqa
-                chunk_size=self.memory_config.chunk_size,
-            )
-            # Define the trainer decoder in chunkwise setting.
-            act_fn = partial(act_chunkwise, chunk_size=self.memory_config.chunk_size)  # noqa
-            train_dec_fn = partial(train_decoder_fn, act_fn=act_fn, n_agents=self.n_agents)  # noqa
-            # Define the executor encoder in chunkwise setting.
-            if self.memory_config.type == "ff_sable":
-                execute_enc_fn = partial(
-                    execute_encoder_chunkwise,  # noqa
-                    chunk_size=self.memory_config.chunk_size,
-                )
-            else:
-                execute_enc_fn = partial(execute_encoder_parallel)  # noqa
-        else:
-            # Define the trainer encode when dealing with full sequence setting.
-            train_enc_fn = partial(train_encoder_parallel)  # noqa
-            # Define the trainer decoder when dealing with full sequence setting.
-            train_dec_fn = partial(train_decoder_fn, act_fn=act_parallel, n_agents=self.n_agents)  # noqa
-            # Define the executor encoder when dealing with full sequence setting.
-            execute_enc_fn = partial(execute_encoder_parallel)  # noqa
+        train_enc_fn = partial(
+            train_encoder_fn,
+            chunk_size=self.memory_config.chunk_size,
+        )
+        train_dec_fn = partial(
+            train_decoder_fn, n_agents=self.n_agents, chunk_size=self.memory_config.chunk_size
+        )
 
-        return train_enc_fn, train_dec_fn, execute_enc_fn, autoregressive_act  # noqa
+        execute_enc_fn = partial(
+            execute_encoder_fn,
+            chunk_size=self.n_agents_per_chunk,
+        )
+
+        return train_enc_fn, train_dec_fn, execute_enc_fn, autoregressive_act

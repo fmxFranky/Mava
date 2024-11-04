@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
 import chex
 import distrax
@@ -21,20 +21,7 @@ import jax.numpy as jnp
 from flax import linen as nn
 
 
-def train_encoder_parallel(
-    encoder: nn.Module,
-    obs: chex.Array,
-    hstate: chex.Array,
-    dones: chex.Array,
-    step_count: chex.Array,
-) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    """Parallel encoding for discrete action spaces."""
-    # Apply the encoder
-    v_loc, obs_rep, updated_hstate = encoder(obs, hstate, dones, step_count)
-    return v_loc, obs_rep, updated_hstate
-
-
-def train_encoder_chunkwise(
+def train_encoder_fn(
     encoder: nn.Module,
     obs: chex.Array,
     hstate: chex.Array,
@@ -43,9 +30,7 @@ def train_encoder_chunkwise(
     chunk_size: int,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Chunkwise encoding for discrete action spaces."""
-    # Get the batch and sequence dimensions
     batch_dim, seq_dim = obs.shape[:2]
-    # Initialize the value location and observation representation
     v_loc = jnp.zeros((batch_dim, seq_dim, 1))
     obs_rep = jnp.zeros((batch_dim, seq_dim, encoder.net_config.embed_dim))
 
@@ -56,14 +41,9 @@ def train_encoder_chunkwise(
         end_idx = (chunk_id + 1) * chunk_size
         chunk_obs = obs[:, start_idx:end_idx]
         chunk_dones = dones[:, start_idx:end_idx]
-        chunk_timestep_id = step_count[:, start_idx:end_idx]
-        # Apply parallel encoding per chunk
-        chunk_v_loc, chunk_obs_rep, hstate = train_encoder_parallel(
-            encoder=encoder,
-            obs=chunk_obs,
-            hstate=hstate,
-            dones=chunk_dones,
-            step_count=chunk_timestep_id,
+        chunk_step_count = step_count[:, start_idx:end_idx]
+        chunk_v_loc, chunk_obs_rep, hstate = encoder(
+            chunk_obs, hstate, chunk_dones, chunk_step_count
         )
         v_loc = v_loc.at[:, start_idx:end_idx].set(chunk_v_loc)
         obs_rep = obs_rep.at[:, start_idx:end_idx].set(chunk_obs_rep)
@@ -72,7 +52,6 @@ def train_encoder_chunkwise(
 
 
 def train_decoder_fn(
-    act_fn: Callable,
     decoder: nn.Module,
     obs_rep: chex.Array,
     action: chex.Array,
@@ -81,16 +60,16 @@ def train_decoder_fn(
     dones: chex.Array,
     step_count: chex.Array,
     n_agents: int,
+    chunk_size: int,
     rng_key: Optional[chex.PRNGKey] = None,
 ) -> Tuple[chex.Array, chex.Array]:
     """Parallel action sampling for discrete action spaces."""
     # Delete `rng_key` since it is not used in discrete action space
     del rng_key
 
-    # Get the shifted actions for predicting the next action
     shifted_actions = get_shifted_actions(action, legal_actions, n_agents=n_agents)
 
-    logit, _ = act_fn(
+    logit, _ = act_chunkwise(
         decoder=decoder,
         obs_rep=obs_rep,
         shifted_actions=shifted_actions,
@@ -98,47 +77,21 @@ def train_decoder_fn(
         dones=dones,
         step_count=step_count,
         legal_actions=legal_actions,
+        chunk_size=chunk_size,
     )
 
-    # Mask the logits for illegal actions
     masked_logits = jnp.where(
         legal_actions,
         logit,
         jnp.finfo(jnp.float32).min,
     )
 
-    # Create a categorical distribution over the masked logits
     distribution = distrax.Categorical(logits=masked_logits)
-
-    # Compute the log probability of the actions
     action_log_prob = distribution.log_prob(action)
     action_log_prob = jnp.expand_dims(action_log_prob, axis=-1)
-
-    # Compute the entropy of the action distribution
     entropy = jnp.expand_dims(distribution.entropy(), axis=-1)
 
     return action_log_prob, entropy
-
-
-def act_parallel(
-    decoder: nn.Module,
-    obs_rep: chex.Array,
-    shifted_actions: chex.Array,
-    hstates: Tuple[chex.Array, chex.Array],
-    dones: chex.Array,
-    step_count: chex.Array,
-    legal_actions: chex.Array,
-) -> Tuple[chex.Array, Tuple[chex.Array, chex.Array]]:
-    del legal_actions
-    # Apply the decoder
-    logit, updated_hstates = decoder(
-        action=shifted_actions,
-        obs_rep=obs_rep,
-        hstates=hstates,
-        dones=dones,
-        step_count=step_count,
-    )
-    return logit, updated_hstates
 
 
 def act_chunkwise(
@@ -161,16 +114,13 @@ def act_chunkwise(
         chunked_obs_rep = obs_rep[:, start_idx:end_idx]
         chunk_shifted_actions = shifted_actions[:, start_idx:end_idx]
         chunk_dones = dones[:, start_idx:end_idx]
-        chunk_timestep_id = step_count[:, start_idx:end_idx]
-        # Apply parallel encoding per chunk
-        chunk_logit, hstates = act_parallel(
-            decoder=decoder,
+        chunk_step_count = step_count[:, start_idx:end_idx]
+        chunk_logit, hstates = decoder(
+            action=chunk_shifted_actions,
             obs_rep=chunked_obs_rep,
-            shifted_actions=chunk_shifted_actions,
             hstates=hstates,
             dones=chunk_dones,
-            step_count=chunk_timestep_id,
-            legal_actions=legal_actions,
+            step_count=chunk_step_count,
         )
         logit = logit.at[:, start_idx:end_idx].set(chunk_logit)
 
@@ -218,8 +168,12 @@ def init_sable(
     )
 
     # Apply the encoder
-    v_loc, obs_rep, _ = execute_encoder_parallel(
-        encoder=encoder, obs=obs, decayed_hstate=hstates[0], step_count=step_count
+    v_loc, obs_rep, _ = execute_encoder_fn(
+        encoder=encoder,
+        obs=obs,
+        decayed_hstate=hstates[0],
+        step_count=step_count,
+        chunk_size=obs.shape[1],
     )
 
     # Apply the decoder
@@ -235,19 +189,7 @@ def init_sable(
     return v_loc
 
 
-def execute_encoder_parallel(
-    encoder: nn.Module,
-    obs: chex.Array,
-    decayed_hstate: chex.Array,
-    step_count: chex.Array,
-) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    """Parallel encoding for discrete action spaces."""
-    # Apply the encoder
-    v_loc, obs_rep, updated_hstate = encoder.recurrent(obs, decayed_hstate, step_count)
-    return v_loc, obs_rep, updated_hstate
-
-
-def execute_encoder_chunkwise(
+def execute_encoder_fn(
     encoder: nn.Module,
     obs: chex.Array,
     decayed_hstate: chex.Array,
@@ -255,24 +197,19 @@ def execute_encoder_chunkwise(
     chunk_size: int,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Chunkwise encoding for Non-memory Sable and for discrete action spaces."""
-    # Get the batch and sequence dimensions
     batch_dim, agents_per_seq = obs.shape[:2]
-    # Initialize the value location and observation representation
     v_loc = jnp.zeros((batch_dim, agents_per_seq, 1))
     obs_rep = jnp.zeros((batch_dim, agents_per_seq, encoder.net_config.embed_dim))
+
     # Apply the encoder per chunk
     num_chunks = agents_per_seq // chunk_size
     for chunk_id in range(0, num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = (chunk_id + 1) * chunk_size
         chunk_obs = obs[:, start_idx:end_idx]
-        chunk_timestep_id = step_count[:, start_idx:end_idx]
-        # Apply parallel encoding per chunk
-        chunk_v_loc, chunk_obs_rep, decayed_hstate = execute_encoder_parallel(
-            encoder=encoder,
-            obs=chunk_obs,
-            decayed_hstate=decayed_hstate,
-            step_count=chunk_timestep_id,
+        chunk_step_count = step_count[:, start_idx:end_idx]
+        chunk_v_loc, chunk_obs_rep, decayed_hstate = encoder.recurrent(
+            chunk_obs, decayed_hstate, chunk_step_count
         )
         v_loc = v_loc.at[:, start_idx:end_idx].set(chunk_v_loc)
         obs_rep = obs_rep.at[:, start_idx:end_idx].set(chunk_obs_rep)
@@ -288,16 +225,11 @@ def autoregressive_act(
     step_count: chex.Array,
     key: chex.PRNGKey,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    # Get the batch size, sequence length, and action dimension
     batch_size, n_agents, action_dim = legal_actions.shape
 
-    # Create a shifted action sequence for predicting the next action
-    # Initialize the shifted action sequence.
     shifted_actions = jnp.zeros((batch_size, n_agents, action_dim + 1))
-    # Set the start-of-timestep token (first action as a "start" signal)
     shifted_actions = shifted_actions.at[:, 0, 0].set(1)
 
-    # Define the output action and output action log sizes
     output_action = jnp.zeros((batch_size, n_agents, 1))
     output_action_log = jnp.zeros_like(output_action)
 
@@ -309,22 +241,17 @@ def autoregressive_act(
             hstates=hstates,
             step_count=step_count[:, i : i + 1],
         )
-        # Mask the logits for illegal actions
         masked_logits = jnp.where(
             legal_actions[:, i : i + 1, :],
             logit,
             jnp.finfo(jnp.float32).min,
         )
-        # Create a categorical distribution over the masked logits
         distribution = distrax.Categorical(logits=masked_logits)
-        # Sample an action from the distribution
         key, sample_key = jax.random.split(key)
         action, action_log = distribution.sample_and_log_prob(seed=sample_key)
-        # Set the action and action log
         output_action = output_action.at[:, i, :].set(action)
         output_action_log = output_action_log.at[:, i, :].set(action_log)
 
-        # Update the shifted action
         update_shifted_action = i + 1 < n_agents
         shifted_actions = jax.lax.cond(
             update_shifted_action,

@@ -13,6 +13,12 @@
 # limitations under the License.
 # ruff: noqa: F401
 
-from mava.networks.utils.sable.discrete_trainer_executor import *  # noqa
+from mava.networks.utils.sable.encoder_decoder_fns import (
+    autoregressive_act,
+    execute_encoder_fn,
+    init_sable,
+    train_decoder_fn,
+    train_encoder_fn,
+)
 from mava.networks.utils.sable.positional_encoding import PositionalEncoding
 from mava.networks.utils.sable.util_fns import concat_time_and_agents, get_init_hidden_state

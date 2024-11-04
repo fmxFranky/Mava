@@ -396,6 +396,7 @@ def learner_setup(
     sable_network = SableNetwork(
         n_agents=n_agents,
         action_dim=action_dim,
+        rollout_length=config.system.rollout_length,
         net_config=config.network.net_config,
         memory_config=config.network.memory_config,
         action_space_type="discrete",
