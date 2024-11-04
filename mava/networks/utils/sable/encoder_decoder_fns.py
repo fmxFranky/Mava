@@ -20,6 +20,13 @@ import jax
 import jax.numpy as jnp
 from flax import linen as nn
 
+# General shapes legend:
+# B: batch size
+# S: sequence length
+# C: number of agents per chunk of sequence
+# N: number of actions
+# A: number of agents
+
 
 def train_encoder_fn(
     encoder: nn.Module,
@@ -30,12 +37,12 @@ def train_encoder_fn(
     chunk_size: int,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Chunkwise encoding for discrete action spaces."""
-    batch_dim, seq_dim = obs.shape[:2]
-    v_loc = jnp.zeros((batch_dim, seq_dim, 1))
-    obs_rep = jnp.zeros((batch_dim, seq_dim, encoder.net_config.embed_dim))
+    B, S = obs.shape[:2]
+    v_loc = jnp.zeros((B, S, 1))
+    obs_rep = jnp.zeros((B, S, encoder.net_config.embed_dim))
 
     # Apply the encoder per chunk
-    num_chunks = seq_dim // chunk_size
+    num_chunks = S // chunk_size
     for chunk_id in range(0, num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = (chunk_id + 1) * chunk_size
@@ -130,17 +137,17 @@ def act_chunkwise(
 def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents: int) -> chex.Array:
     """Get the shifted action sequence for predicting the next action."""
     # Get the batch size, sequence length, and action dimension
-    batch_size, sequence_size, action_dim = legal_actions.shape
+    B, S, N = legal_actions.shape
 
     # Create a shifted action sequence for predicting the next action
     # Initialize the shifted action sequence.
-    shifted_actions = jnp.zeros((batch_size, sequence_size, action_dim + 1))
+    shifted_actions = jnp.zeros((B, S, N + 1))
 
     # Set the start-of-timestep token (first action as a "start" signal)
-    start_timestep_token = jnp.zeros(action_dim + 1).at[0].set(1)
+    start_timestep_token = jnp.zeros(N + 1).at[0].set(1)
 
     # One hot encode the action
-    one_hot_action = jax.nn.one_hot(action, action_dim)
+    one_hot_action = jax.nn.one_hot(action, N)
 
     # Insert one-hot encoded actions into shifted array, shifting by 1 position
     shifted_actions = shifted_actions.at[:, :, 1:].set(one_hot_action)
@@ -197,12 +204,12 @@ def execute_encoder_fn(
     chunk_size: int,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
     """Chunkwise encoding for Non-memory Sable and for discrete action spaces."""
-    batch_dim, agents_per_seq = obs.shape[:2]
-    v_loc = jnp.zeros((batch_dim, agents_per_seq, 1))
-    obs_rep = jnp.zeros((batch_dim, agents_per_seq, encoder.net_config.embed_dim))
+    B, C = obs.shape[:2]
+    v_loc = jnp.zeros((B, C, 1))
+    obs_rep = jnp.zeros((B, C, encoder.net_config.embed_dim))
 
     # Apply the encoder per chunk
-    num_chunks = agents_per_seq // chunk_size
+    num_chunks = C // chunk_size
     for chunk_id in range(0, num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = (chunk_id + 1) * chunk_size
@@ -225,16 +232,16 @@ def autoregressive_act(
     step_count: chex.Array,
     key: chex.PRNGKey,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    batch_size, n_agents, action_dim = legal_actions.shape
+    B, A, N = legal_actions.shape
 
-    shifted_actions = jnp.zeros((batch_size, n_agents, action_dim + 1))
+    shifted_actions = jnp.zeros((B, A, N + 1))
     shifted_actions = shifted_actions.at[:, 0, 0].set(1)
 
-    output_action = jnp.zeros((batch_size, n_agents, 1))
+    output_action = jnp.zeros((B, A, 1))
     output_action_log = jnp.zeros_like(output_action)
 
     # Apply the decoder autoregressively
-    for i in range(n_agents):
+    for i in range(A):
         logit, updated_hstates = decoder.recurrent(
             action=shifted_actions[:, i : i + 1, :],
             obs_rep=obs_rep[:, i : i + 1, :],
@@ -252,12 +259,12 @@ def autoregressive_act(
         output_action = output_action.at[:, i, :].set(action)
         output_action_log = output_action_log.at[:, i, :].set(action_log)
 
-        update_shifted_action = i + 1 < n_agents
+        update_shifted_action = i + 1 < A
         shifted_actions = jax.lax.cond(
             update_shifted_action,
             lambda action=action, i=i, shifted_actions=shifted_actions: shifted_actions.at[
                 :, i + 1, 1:
-            ].set(jax.nn.one_hot(action[:, 0], action_dim)),
+            ].set(jax.nn.one_hot(action[:, 0], N)),
             lambda shifted_actions=shifted_actions: shifted_actions,
         )
 
