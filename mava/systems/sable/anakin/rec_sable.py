@@ -494,7 +494,7 @@ def learner_setup(
         )
         # Update the params and hidden states
         params = restored_params
-        init_hstates = restored_hstates if restored_hstates else init_hstates  # type: ignore
+        init_hstates = restored_hstates if restored_hstates else init_hstates
 
     # Define params to be replicated across devices and batches.
     key, step_keys = jax.random.split(key)

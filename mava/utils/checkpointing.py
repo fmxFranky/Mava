@@ -15,7 +15,7 @@
 import os
 import warnings
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple, Type, Union
+from typing import Any, Dict, Optional, Tuple, Type
 
 import absl.logging as absl_logging
 import orbax.checkpoint
@@ -23,8 +23,6 @@ from chex import Numeric
 from jax import tree
 from omegaconf import DictConfig, OmegaConf
 
-from mava.systems.ppo.types import HiddenStates
-from mava.systems.sable.types import HiddenStates as SableHiddenStates
 from mava.types import MavaState
 
 # Keep track of the version of the checkpointer
@@ -152,7 +150,7 @@ class Checkpointer:
         timestep: Optional[int] = None,
         restore_hstates: bool = False,
         THiddenState: Optional[Type] = None,  # noqa: N803
-    ) -> Tuple[Any, Union[HiddenStates, SableHiddenStates, None]]:
+    ) -> Tuple[Any, Optional[Any]]:
         """Restore the params and the hidden state (in case of RNNs)
 
         Args:
