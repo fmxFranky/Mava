@@ -27,10 +27,11 @@ from colorama import Fore, Style
 from flax.core.frozen_dict import FrozenDict as Params
 from jax import tree
 from jumanji.env import Environment
+from jumanji.types import TimeStep
 from omegaconf import DictConfig, OmegaConf
 from rich.pretty import pprint
 
-from mava.evaluator import get_eval_fn, get_num_eval_envs, make_rec_sable_act_fn
+from mava.evaluator import ActorState, EvalActFn, get_eval_fn, get_num_eval_envs
 from mava.networks import SableNetwork
 from mava.networks.utils.sable import concat_time_and_agents, get_init_hidden_state
 from mava.systems.sable.types import (
@@ -40,7 +41,7 @@ from mava.systems.sable.types import (
     Transition,
 )
 from mava.systems.sable.types import RecLearnerState as LearnerState
-from mava.types import ExperimentOutput, LearnerFn, MarlEnv
+from mava.types import Action, ExperimentOutput, LearnerFn, MarlEnv
 from mava.utils import make_env as environments
 from mava.utils.checkpointing import Checkpointer
 from mava.utils.jax_utils import unreplicate_batch_dim, unreplicate_n_dims
@@ -540,6 +541,25 @@ def run_experiment(_config: DictConfig) -> float:
     learn, sable_execution_fn, learner_state = learner_setup(env, (key, net_key), config)
 
     # Setup evaluator.
+    def make_rec_sable_act_fn(actor_apply_fn: ExecutionApply) -> EvalActFn:
+        _hidden_state = "hidden_state"
+
+        def eval_act_fn(
+            params: Params, timestep: TimeStep, key: chex.PRNGKey, actor_state: ActorState
+        ) -> Tuple[Action, Dict]:
+            hidden_state = actor_state[_hidden_state]
+            output_action, _, _, hidden_state = actor_apply_fn(  # type: ignore
+                params,
+                timestep.observation,
+                hidden_state,
+                key,
+            )
+            # Sequenze the output actions
+            actions = jnp.squeeze(output_action, axis=(-1))
+            return actions, {_hidden_state: hidden_state}
+
+        return eval_act_fn
+
     # One key per device for evaluation.
     eval_keys = jax.random.split(key_e, n_devices)
     eval_act_fn = make_rec_sable_act_fn(sable_execution_fn)
