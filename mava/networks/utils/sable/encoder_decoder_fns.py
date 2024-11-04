@@ -242,7 +242,7 @@ def autoregressive_act(
 
     # Apply the decoder autoregressively
     for i in range(A):
-        logit, updated_hstates = decoder.recurrent(
+        logit, hstates = decoder.recurrent(
             action=shifted_actions[:, i : i + 1, :],
             obs_rep=obs_rep[:, i : i + 1, :],
             hstates=hstates,
@@ -268,4 +268,4 @@ def autoregressive_act(
             lambda shifted_actions=shifted_actions: shifted_actions,
         )
 
-    return output_action.astype(jnp.int32), output_action_log, updated_hstates
+    return output_action.astype(jnp.int32), output_action_log, hstates
