@@ -32,6 +32,7 @@ from rich.pretty import pprint
 
 from mava.evaluator import get_eval_fn, get_num_eval_envs, make_ff_sable_act_fn
 from mava.networks import SableNetwork
+from mava.networks.utils.sable import get_init_hidden_state
 from mava.systems.sable.types import (
     ExecutionApply,
     TrainingApply,
@@ -43,7 +44,6 @@ from mava.utils import make_env as environments
 from mava.utils.checkpointing import Checkpointer
 from mava.utils.jax_utils import merge_leading_dims, unreplicate_batch_dim, unreplicate_n_dims
 from mava.utils.logger import LogEvent, MavaLogger
-from mava.utils.sable_utils import get_init_hidden_state
 from mava.utils.total_timestep_checker import check_total_timesteps
 from mava.utils.training import make_learning_rate
 from mava.wrappers.episode_metrics import get_final_step_metrics

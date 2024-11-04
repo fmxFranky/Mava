@@ -20,7 +20,7 @@ import jax.numpy as jnp
 from chex import Array
 from omegaconf import DictConfig
 
-from mava.utils.sable_utils import PositionalEncoding
+from mava.networks.utils.sable import PositionalEncoding
 
 # General shapes legend:
 # B: batch size
