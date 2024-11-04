@@ -329,7 +329,9 @@ def get_learner_step_fn(
                 return (new_params, new_opt_state, key), loss_info
 
             params, opt_states, traj_batch, advantages, targets, key = update_state
+            key = jnp.squeeze(key, axis=0)  # Remove the learner_devices axis
             key, shuffle_key, entropy_key = jax.random.split(key, 3)
+            key = jnp.expand_dims(key, axis=0)  # add the learner_devices axis for shape consitency
             # Shuffle minibatches
             batch_size = config.system.rollout_length * num_learner_envs
             permutation = jax.random.permutation(shuffle_key, batch_size)
@@ -518,8 +520,8 @@ def learner_setup(
     apply_fns = (actor_network.apply, critic_network.apply)
     update_fns = (actor_optim.update, critic_optim.update)
 
-    # defines how the learner state is sharded: params, opt and key = replicated, timestep = sharded
-    learn_state_spec = LearnerState(model_spec, model_spec, model_spec, None, data_spec)
+    # defines how the learner state is sharded: params, opt and key = sharded, timestep = sharded
+    learn_state_spec = LearnerState(model_spec, model_spec, data_spec, None, data_spec)
     learn = get_learner_step_fn(apply_fns, update_fns, config)
     learn = jax.jit(
         shard_map(
@@ -542,7 +544,8 @@ def learner_setup(
         params = restored_params
 
     # Define params to be replicated across devices and batches.
-    key, step_keys = jax.random.split(key)
+    key, *step_keys = jax.random.split(key, len(learner_devices) + 1)
+    step_keys = jnp.stack(step_keys, 0)
     opt_states = OptStates(actor_opt_state, critic_opt_state)
 
     # Duplicate learner across Learner devices.

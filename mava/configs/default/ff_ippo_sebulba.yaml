@@ -3,7 +3,7 @@ defaults:
   - arch: sebulba
   - system: ppo/ff_ippo
   - network: mlp  # [mlp, continuous_mlp, cnn]
-  - env: smac_gym  # [rware_gym, lbf_gym, smac_gym]
+  - env: lbf_gym  # [rware_gym, lbf_gym, smac_gym]
   - _self_
 
 hydra:

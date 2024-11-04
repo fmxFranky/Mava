@@ -267,7 +267,7 @@ class GymToJumanji:
     ) -> Union[Observation, ObservationGlobalState]:
         """Create an observation from the raw observation and environment state."""
 
-        # (num_agents, num_envs, ...) -> (num_envs, num_agents, ...)
+        # (N, B, O) -> (B, N, O)
         obs = np.array(obs).swapaxes(0, 1)
         action_mask = np.stack(info["actions_mask"])
         obs_data = {"agents_view": obs, "action_mask": action_mask}
