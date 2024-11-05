@@ -120,9 +120,9 @@ class SimpleRetention(nn.Module):
         timestep_dones = dones[:, :: self.n_agents]  # B, T
 
         # B, T, T
-        decay_matrix = self._get_default_decay_matrix(
-            timestep_dones
-        ) * self._get_decay_matrix_mask_timestep(timestep_dones)
+        timestep_mask = self._get_decay_matrix_mask_timestep(timestep_dones)
+        decay_matrix = self._get_default_decay_matrix(timestep_dones)
+        decay_matrix *= timestep_mask
 
         # B, T, T ->  B, T * N, T * N
         decay_matrix = jnp.repeat(
