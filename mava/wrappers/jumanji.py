@@ -335,9 +335,11 @@ def _get_location(grid: chex.Array) -> chex.Array:
 
 
 class VectorConnectorWrapper(JumanjiMarlWrapper):
-    """Multi-agent wrapper for the MA Connector environment.
-    This env should have the AgentID wrapper applied to it since there is not longer a channel that
-    can encode AgentID information.
+    """Multi-agent wrapper for the MaConnector environment.
+
+    This wrapper transforms the grid-based observation to a vector of features. This env should
+    have the AgentID wrapper applied to it since there is not longer a channel that can encode
+    AgentID information.
     """
 
     def __init__(self, env: MaConnector, add_global_state: bool = False):
