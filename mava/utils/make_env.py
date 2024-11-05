@@ -78,7 +78,7 @@ _gigastep_registry = {"Gigastep": GigastepWrapper}
 _gym_registry = {
     "RobotWarehouse": GymWrapper,
     "LevelBasedForaging": GymWrapper,
-    "Starcraft": SmacWrapper,
+    "SMAC": SmacWrapper,
 }
 
 

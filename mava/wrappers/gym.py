@@ -42,7 +42,7 @@ warnings.filterwarnings("ignore", module="gymnasium.utils.passive_env_checker")
 
 # needed to avoid host -> device transfers when calling TimeStep.last()
 class StepType(IntEnum):
-    """Coppy of Jumanji's step type but with numpy arrays"""
+    """Copy of Jumanji's step type but with numpy arrays"""
 
     FIRST = 0
     MID = 1
@@ -69,7 +69,7 @@ class TimeStep:
 
 class GymWrapper(gymnasium.Wrapper):
     """Base wrapper for multi-agent gym environments.
-    This wrapper works out of the box for RobotWarehouse and level based foraging.
+    This wrapper works out of the box for RobotWarehouse and level-based foraging.
     """
 
     def __init__(
@@ -100,7 +100,7 @@ class GymWrapper(gymnasium.Wrapper):
 
         agents_view, info = self._env.reset()
 
-        info = {"actions_mask": self.get_actions_mask(info)}
+        info = {"action_mask": self.get_action_mask(info)}
         if self.add_global_state:
             info["global_obs"] = self.get_global_obs(agents_view)
 
@@ -109,7 +109,7 @@ class GymWrapper(gymnasium.Wrapper):
     def step(self, actions: List) -> Tuple[NDArray, NDArray, NDArray, NDArray, Dict]:
         agents_view, reward, terminated, truncated, info = self._env.step(actions)
 
-        info = {"actions_mask": self.get_actions_mask(info)}
+        info = {"action_mask": self.get_action_mask(info)}
         if self.add_global_state:
             info["global_obs"] = self.get_global_obs(agents_view)
 
@@ -120,7 +120,7 @@ class GymWrapper(gymnasium.Wrapper):
 
         return agents_view, reward, terminated, truncated, info
 
-    def get_actions_mask(self, info: Dict) -> NDArray:
+    def get_action_mask(self, info: Dict) -> NDArray:
         if "action_mask" in info:
             return np.array(info["action_mask"])
         return np.ones((self.num_agents, self.num_actions), dtype=np.float32)
@@ -138,10 +138,11 @@ class SmacWrapper(GymWrapper):
         actions = [int(action) for action in actions]
 
         agents_view, reward, terminated, truncated, info = super().step(actions)
+        info["won_episode"] = info["battle_won"]
 
         return agents_view, reward, terminated, truncated, info
 
-    def get_actions_mask(self, info: Dict) -> NDArray:
+    def get_action_mask(self, info: Dict) -> NDArray:
         return np.array(self._env.unwrapped.get_avail_actions())
 
 
@@ -232,7 +233,7 @@ class GymAgentIDWrapper(gymnasium.Wrapper):
 
 
 class GymToJumanji:
-    """Converts from the Gym API to the dm_env API."""
+    """Converts from the Gym API to the Jumanji API."""
 
     def __init__(self, env: gymnasium.vector.VectorEnv):
         self.env = env
@@ -269,7 +270,7 @@ class GymToJumanji:
 
         # (N, B, O) -> (B, N, O)
         obs = np.array(obs).swapaxes(0, 1)
-        action_mask = np.stack(info["actions_mask"])
+        action_mask = np.stack(info["action_mask"])
         obs_data = {"agents_view": obs, "action_mask": action_mask}
 
         if "global_obs" in info:
@@ -301,6 +302,8 @@ class GymToJumanji:
 
 # Copied form Gymnasium/blob/main/gymnasium/vector/async_vector_env.py
 # Modified to work with multiple agents
+# Note: The worker handles auto-resetting the environments.
+# Each environment resets when all of its agents have either terminated or been truncated.
 def async_multiagent_worker(  # CCR001
     index: int,
     env_fn: Callable,

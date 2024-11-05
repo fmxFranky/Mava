@@ -221,11 +221,12 @@ def get_sebulba_eval_fn(
 
     Args:
     ----
-        env: an environment that conforms to the mava environment spec.
-        act_fn: a function that takes in params, timestep, key and optionally a state
+        env_maker: A function to create the environment instances.
+        act_fn: A function that takes in params, timestep, key and optionally a state
                 and returns actions and optionally a state (see `EvalActFn`).
-        config: the system config.
-        absolute_metric: whether or not this evaluator calculates the absolute_metric.
+        config: The system config.
+        np_rng: Random number generator for seeding environment.
+        absolute_metric: Whether or not this evaluator calculates the absolute_metric.
                 This determines how many evaluation episodes it does.
     """
     n_devices = jax.device_count()
@@ -240,8 +241,8 @@ def get_sebulba_eval_fn(
     env = env_maker(config, n_parallel_envs)
 
     act_fn = jax.jit(
-        act_fn, device=jax.devices("cpu")[0]
-    )  # cpu so that we don't block actors/learners
+        act_fn, device=jax.local_devices()[config.arch.actor_device_ids[0]]
+    )  # Evaluate using the first actor device
 
     # Warnings if num eval episodes is not divisible by num parallel envs.
     if eval_episodes % n_parallel_envs != 0:
@@ -264,6 +265,7 @@ def get_sebulba_eval_fn(
         def _episode(key: PRNGKey) -> Tuple[PRNGKey, Metrics]:
             """Simulates `num_envs` episodes."""
 
+            # Generate a list of random seeds within the 32-bit integer range, using a seeded RNG.
             seeds = np_rng.integers(np.iinfo(np.int32).max, size=n_parallel_envs).tolist()
             ts = env.reset(seed=seeds)
 
