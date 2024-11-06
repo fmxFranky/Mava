@@ -33,7 +33,7 @@ from rich.pretty import pprint
 
 from mava.evaluator import ActorState, EvalActFn, get_eval_fn, get_num_eval_envs
 from mava.networks import SableNetwork
-from mava.networks.utils.sable import concat_time_and_agents, get_init_hidden_state
+from mava.networks.utils.sable import get_init_hidden_state
 from mava.systems.sable.types import (
     ActorApply,
     HiddenStates,
@@ -44,7 +44,7 @@ from mava.systems.sable.types import RecLearnerState as LearnerState
 from mava.types import Action, ExperimentOutput, LearnerFn, MarlEnv
 from mava.utils import make_env as environments
 from mava.utils.checkpointing import Checkpointer
-from mava.utils.jax_utils import unreplicate_batch_dim, unreplicate_n_dims
+from mava.utils.jax_utils import concat_time_and_agents, unreplicate_batch_dim, unreplicate_n_dims
 from mava.utils.logger import LogEvent, MavaLogger
 from mava.utils.network_utils import get_action_head
 from mava.utils.total_timestep_checker import check_total_timesteps

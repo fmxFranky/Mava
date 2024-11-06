@@ -21,5 +21,5 @@ from mava.networks.utils.sable.encode import (
     act_encoder_fn,
     train_encoder_fn,
 )
+from mava.networks.utils.sable.get_init_hstates import get_init_hidden_state
 from mava.networks.utils.sable.positional_encoding import PositionalEncoding
-from mava.networks.utils.sable.util_fns import concat_time_and_agents, get_init_hidden_state

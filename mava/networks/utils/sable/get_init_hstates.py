@@ -12,26 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import chex
 import jax.numpy as jnp
 
 from mava.systems.sable.types import HiddenStates, SableNetworkConfig
-
-
-def concat_time_and_agents(x: chex.Array) -> chex.Array:
-    """Concatenates the time and agent dimensions in the input tensor.
-
-    Args:
-    ----
-        x: Input tensor of shape (Time, Batch, Agents, ...).
-
-    Returns:
-    -------
-        chex.Array: Tensor of shape (Batch, Time x Agents, ...).
-    """
-    x = jnp.moveaxis(x, 0, 1)
-    x = jnp.reshape(x, (x.shape[0], x.shape[1] * x.shape[2], *x.shape[3:]))
-    return x
 
 
 def get_init_hidden_state(actor_net_config: SableNetworkConfig, batch_size: int) -> HiddenStates:
