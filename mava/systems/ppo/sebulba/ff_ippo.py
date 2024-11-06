@@ -408,35 +408,21 @@ def learner_thread(
 
         with RecordTimeTo(learn_times["learner_time_per_eval"]):
             for _ in range(config.system.num_updates_per_eval):
-                # Accumulate the batches, timesteps, and rollout times
-                accumulated_traj_batches = []
-                accumulated_timesteps = []
-
-                # Possibly get many rollouts for 1 learn step - allows learning with large batches
-                for _ in range(config.arch.n_learner_accumulate):
-                    # Get the trajectory batch from the pipeline
-                    # This is blocking so it will wait until the pipeline has data.
-                    with RecordTimeTo(learn_times["rollout_get_time"]):
-                        traj_batch, timestep, rollout_time = pipeline.get(block=True)
-
-                    # Store the retrieved data
-                    accumulated_traj_batches.append(traj_batch)
-                    accumulated_timesteps.append(timestep)
-                    rollout_times.append(rollout_time)
-
-                # Concatenate the accumulated timesteps and trajectory batches on the num_envs axis
-                traj_batches = tree.map(lambda *x: jnp.concat(x, axis=0), *accumulated_traj_batches)
-                timesteps = tree.map(lambda *x: jnp.concat(x, axis=0), *accumulated_timesteps)
+                # Get the trajectory batch from the pipeline
+                # This is blocking so it will wait until the pipeline has data.
+                with RecordTimeTo(learn_times["rollout_get_time"]):
+                    traj_batch, timestep, rollout_time = pipeline.get(block=True)
 
                 # Replace the timestep in the learner state with the latest timestep
                 # This means the learner has access to the entire trajectory as well as
                 # an additional timestep which it can use to bootstrap.
-                learner_state = learner_state._replace(timestep=timesteps)
+                learner_state = learner_state._replace(timestep=timestep)
                 # Update the networks
                 with RecordTimeTo(learn_times["learning_time"]):
-                    learner_state, ep_metrics, train_metrics = learn_fn(learner_state, traj_batches)
+                    learner_state, ep_metrics, train_metrics = learn_fn(learner_state, traj_batch)
 
                 metrics.append((ep_metrics, train_metrics))
+                rollout_times.append(rollout_time)
 
                 # Update all the params sources so all actors can get the latest params
                 params = jax.block_until_ready(learner_state.params)
@@ -590,10 +576,7 @@ def run_experiment(_config: DictConfig) -> float:
     check_sebulba_config(config)
 
     steps_per_rollout = (
-        config.system.rollout_length
-        * config.arch.num_envs
-        * config.system.num_updates_per_eval
-        * config.arch.n_learner_accumulate
+        config.system.rollout_length * config.arch.num_envs * config.system.num_updates_per_eval
     )
 
     # Logger setup
