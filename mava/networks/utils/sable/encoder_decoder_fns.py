@@ -139,7 +139,6 @@ def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents:
     B, S, A = legal_actions.shape
 
     # Create a shifted action sequence for predicting the next action
-    # Initialize the shifted action sequence.
     shifted_actions = jnp.zeros((B, S, A + 1))
 
     # Set the start-of-timestep token (first action as a "start" signal)
