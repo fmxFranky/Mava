@@ -1,4 +1,4 @@
-# ---  Retention for Non-memory Sable ---
+# ---  Retention for ff-Sable ---
 net_config:
   n_block: 1 # Number of blocks
   embed_dim: 64 # Embedding dimension

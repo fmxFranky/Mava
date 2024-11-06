@@ -36,10 +36,9 @@ class PositionalEncoding(nn.Module):
             jnp.arange(0, self.d_model, 2) * (-jnp.log(10000.0) / self.d_model)
         )[jnp.newaxis]
         # Add a flag to enable positional encoding based on the network type
-        if self.memory_config.type == "rec_sable":
-            self.do_pos_enc = self.memory_config.timestep_positional_encoding
-        else:
-            self.do_pos_enc = False
+        self.do_pos_enc = (
+            self.memory_config.type == "rec_sable"
+        ) and self.memory_config.timestep_positional_encoding
 
     def __call__(
         self, key: chex.Array, query: chex.Array, value: chex.Array, position: chex.Array

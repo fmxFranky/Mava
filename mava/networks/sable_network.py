@@ -25,8 +25,8 @@ from omegaconf import DictConfig
 from mava.networks.retention import MultiScaleRetention
 from mava.networks.torsos import SwiGLU
 from mava.networks.utils.sable import (
+    act_encoder_fn,
     autoregressive_act,
-    execute_encoder_fn,
     init_sable,
     train_decoder_fn,
     train_encoder_fn,
@@ -401,13 +401,13 @@ class SableNetwork(nn.Module):
             self.action_space_type,
         )
 
-        # Set the executor and trainer functions
+        # Set the actor and trainer functions
         (
             self.train_encoder_fn,
             self.train_decoder_fn,
-            self.execute_encoder_fn,
+            self.act_encoder_fn,
             self.autoregressive_act,
-        ) = self.setup_executor_trainer_fn()
+        ) = self.setup_actor_trainer_fn()
 
     def __call__(
         self,
@@ -456,7 +456,7 @@ class SableNetwork(nn.Module):
         # Decay the hidden states: each timestep we decay the hidden states once
         decayed_hstates = tree.map(lambda x: x * self.decay_kappas, hstates)
 
-        v_loc, obs_rep, updated_enc_hs = self.execute_encoder_fn(
+        v_loc, obs_rep, updated_enc_hs = self.act_encoder_fn(
             encoder=self.encoder,
             obs=obs,
             decayed_hstate=decayed_hstates[0],
@@ -492,8 +492,8 @@ class SableNetwork(nn.Module):
             key=key,
         )
 
-    def setup_executor_trainer_fn(self) -> Tuple:
-        """Setup the executor and trainer functions."""
+    def setup_actor_trainer_fn(self) -> Tuple:
+        """Setup the actor and trainer functions."""
 
         train_enc_fn = partial(
             train_encoder_fn,
@@ -504,7 +504,7 @@ class SableNetwork(nn.Module):
         )
 
         execute_enc_fn = partial(
-            execute_encoder_fn,
+            act_encoder_fn,
             chunk_size=self.n_agents_per_chunk,
         )
 

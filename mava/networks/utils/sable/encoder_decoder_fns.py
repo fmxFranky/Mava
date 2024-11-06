@@ -76,7 +76,7 @@ def train_decoder_fn(
 
     shifted_actions = get_shifted_actions(action, legal_actions, n_agents=n_agents)
 
-    logit, _ = act_chunkwise(
+    logit, _ = act_decoder_fn(
         decoder=decoder,
         obs_rep=obs_rep,
         shifted_actions=shifted_actions,
@@ -101,7 +101,7 @@ def train_decoder_fn(
     return action_log_prob, entropy
 
 
-def act_chunkwise(
+def act_decoder_fn(
     decoder: nn.Module,
     obs_rep: chex.Array,
     shifted_actions: chex.Array,
@@ -175,7 +175,7 @@ def init_sable(
     )
 
     # Apply the encoder
-    v_loc, obs_rep, _ = execute_encoder_fn(
+    v_loc, obs_rep, _ = act_encoder_fn(
         encoder=encoder,
         obs=obs,
         decayed_hstate=hstates[0],
@@ -196,14 +196,14 @@ def init_sable(
     return v_loc
 
 
-def execute_encoder_fn(
+def act_encoder_fn(
     encoder: nn.Module,
     obs: chex.Array,
     decayed_hstate: chex.Array,
     step_count: chex.Array,
     chunk_size: int,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    """Chunkwise encoding for Non-memory Sable and for discrete action spaces."""
+    """Chunkwise encoding for ff-Sable and for discrete action spaces."""
     B, C = obs.shape[:2]
     v_loc = jnp.zeros((B, C, 1))
     obs_rep = jnp.zeros((B, C, encoder.net_config.embed_dim))

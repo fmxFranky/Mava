@@ -44,7 +44,7 @@ class MATNetworkConfig(NamedTuple):
     use_rmsnorm: bool
 
 
-ExecutionApply = Callable[
+ActorApply = Callable[
     [FrozenDict, MavaObservation, PRNGKey],
     Tuple[Array, Array, Array, Array],
 ]

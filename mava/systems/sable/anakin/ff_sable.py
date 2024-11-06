@@ -35,7 +35,7 @@ from mava.evaluator import ActorState, EvalActFn, get_eval_fn, get_num_eval_envs
 from mava.networks import SableNetwork
 from mava.networks.utils.sable import get_init_hidden_state
 from mava.systems.sable.types import (
-    ExecutionApply,
+    ActorApply,
     TrainingApply,
     Transition,
 )
@@ -53,7 +53,7 @@ from mava.wrappers.episode_metrics import get_final_step_metrics
 
 def get_learner_fn(
     env: Environment,
-    apply_fns: Tuple[ExecutionApply, TrainingApply],
+    apply_fns: Tuple[ActorApply, TrainingApply],
     update_fn: optax.TransformUpdateFn,
     config: DictConfig,
 ) -> LearnerFn[LearnerState]:
@@ -432,14 +432,14 @@ def learner_setup(
     minibatch_size = (
         config.arch.num_envs * config.system.rollout_length // config.system.num_minibatches
     )
-    dummy_executor_hs = get_init_hidden_state(config.network.net_config, config.arch.num_envs)
+    dummy_actor_hs = get_init_hidden_state(config.network.net_config, config.arch.num_envs)
     dummy_trainer_hs = get_init_hidden_state(config.network.net_config, minibatch_size)
 
     # Pack apply and update functions.
     # Using dummy hstates, since we are not updating the hstates during training.
     apply_fns = (
         partial(
-            sable_network.apply, method="get_actions", hstates=dummy_executor_hs
+            sable_network.apply, method="get_actions", hstates=dummy_actor_hs
         ),  # Execution function
         partial(sable_network.apply, hstates=dummy_trainer_hs),  # Training function
     )
@@ -516,7 +516,7 @@ def run_experiment(_config: DictConfig) -> float:
     learn, sable_execution_fn, learner_state = learner_setup(env, (key, net_key), config)
 
     # Setup evaluator.
-    def make_ff_sable_act_fn(actor_apply_fn: ExecutionApply) -> EvalActFn:
+    def make_ff_sable_act_fn(actor_apply_fn: ActorApply) -> EvalActFn:
         def eval_act_fn(
             params: Params, timestep: TimeStep, key: chex.PRNGKey, actor_state: ActorState
         ) -> Tuple[Action, Dict]:

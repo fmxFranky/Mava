@@ -35,7 +35,7 @@ from mava.evaluator import ActorState, EvalActFn, get_eval_fn, get_num_eval_envs
 from mava.networks import SableNetwork
 from mava.networks.utils.sable import concat_time_and_agents, get_init_hidden_state
 from mava.systems.sable.types import (
-    ExecutionApply,
+    ActorApply,
     HiddenStates,
     TrainingApply,
     Transition,
@@ -54,7 +54,7 @@ from mava.wrappers.episode_metrics import get_final_step_metrics
 
 def get_learner_fn(
     env: Environment,
-    apply_fns: Tuple[ExecutionApply, TrainingApply],
+    apply_fns: Tuple[ActorApply, TrainingApply],
     update_fn: optax.TransformUpdateFn,
     config: DictConfig,
 ) -> LearnerFn[LearnerState]:
@@ -545,7 +545,7 @@ def run_experiment(_config: DictConfig) -> float:
     learn, sable_execution_fn, learner_state = learner_setup(env, (key, net_key), config)
 
     # Setup evaluator.
-    def make_rec_sable_act_fn(actor_apply_fn: ExecutionApply) -> EvalActFn:
+    def make_rec_sable_act_fn(actor_apply_fn: ActorApply) -> EvalActFn:
         _hidden_state = "hidden_state"
 
         def eval_act_fn(

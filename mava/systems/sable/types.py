@@ -48,7 +48,7 @@ class RecLearnerState(NamedTuple):
 
 
 class FFLearnerState(NamedTuple):
-    """State of the learner for Non-Memory Sable"""
+    """State of the learner for ff-Sable"""
 
     params: FrozenDict
     opt_states: OptState
@@ -69,7 +69,7 @@ class Transition(NamedTuple):
     info: Dict
 
 
-ExecutionApply = Callable[
+ActorApply = Callable[
     [FrozenDict, Array, Array, HiddenStates, PRNGKey],
     Tuple[Array, Array, Array, Array, HiddenStates],
 ]
