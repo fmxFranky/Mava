@@ -248,7 +248,7 @@ class MultiScaleRetention(nn.Module):
         self.group_norm = nn.GroupNorm(num_groups=self.n_head)
 
         # Initialise the retention mechanisms
-        self.retentions = [
+        self.retention_heads = [
             SimpleRetention(
                 self.embed_dim,
                 self.head_size,
@@ -278,11 +278,10 @@ class MultiScaleRetention(nn.Module):
         # Positional encoding of the current step
         key, query, value = self.pe(key, query, value, step_count)
 
-        # Per head retention
         ret_output = jnp.zeros((B, C, self.head_size), dtype=value.dtype)
         hs = jnp.copy(hstate)
         for head in range(self.n_head):
-            y, new_hs = self.retentions[head](key, query, value, hstate[:, head], dones)
+            y, new_hs = self.retention_heads[head](key, query, value, hstate[:, head], dones)
             ret_output = ret_output.at[
                 :, :, self.head_size * head : self.head_size * (head + 1)
             ].set(y)
@@ -308,7 +307,9 @@ class MultiScaleRetention(nn.Module):
         ret_output = jnp.zeros((B, S, self.head_size), dtype=value_n.dtype)
         hs = jnp.zeros_like(hstate)  # hidden state per head
         for head in range(self.n_head):
-            y, new_hs = self.retentions[head].recurrent(key_n, query_n, value_n, hstate[:, head])
+            y, new_hs = self.retention_heads[head].recurrent(
+                key_n, query_n, value_n, hstate[:, head]
+            )
             ret_output = ret_output.at[
                 :, :, self.head_size * head : self.head_size * (head + 1)
             ].set(y)
