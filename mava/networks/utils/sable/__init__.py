@@ -13,10 +13,12 @@
 # limitations under the License.
 # ruff: noqa: F401
 
-from mava.networks.utils.sable.encoder_decoder_fns import (
-    act_encoder_fn,
+from mava.networks.utils.sable.decode import (
     autoregressive_act,
     train_decoder_fn,
+)
+from mava.networks.utils.sable.encode import (
+    act_encoder_fn,
     train_encoder_fn,
 )
 from mava.networks.utils.sable.positional_encoding import PositionalEncoding

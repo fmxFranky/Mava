@@ -23,39 +23,8 @@ from flax import linen as nn
 # General shapes legend:
 # B: batch size
 # S: sequence length
-# C: number of agents per chunk of sequence
 # A: number of actions
 # N: number of agents
-
-
-def train_encoder_fn(
-    encoder: nn.Module,
-    obs: chex.Array,
-    hstate: chex.Array,
-    dones: chex.Array,
-    step_count: chex.Array,
-    chunk_size: int,
-) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    """Chunkwise encoding for discrete action spaces."""
-    B, S = obs.shape[:2]
-    v_loc = jnp.zeros((B, S, 1))
-    obs_rep = jnp.zeros((B, S, encoder.net_config.embed_dim))
-
-    # Apply the encoder per chunk
-    num_chunks = S // chunk_size
-    for chunk_id in range(0, num_chunks):
-        start_idx = chunk_id * chunk_size
-        end_idx = (chunk_id + 1) * chunk_size
-        chunk_obs = obs[:, start_idx:end_idx]
-        chunk_dones = dones[:, start_idx:end_idx]
-        chunk_step_count = step_count[:, start_idx:end_idx]
-        chunk_v_loc, chunk_obs_rep, hstate = encoder(
-            chunk_obs, hstate, chunk_dones, chunk_step_count
-        )
-        v_loc = v_loc.at[:, start_idx:end_idx].set(chunk_v_loc)
-        obs_rep = obs_rep.at[:, start_idx:end_idx].set(chunk_obs_rep)
-
-    return v_loc, obs_rep, hstate
 
 
 def train_decoder_fn(
@@ -155,34 +124,6 @@ def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents:
     shifted_actions = shifted_actions.at[:, ::n_agents, :].set(start_timestep_token)
 
     return shifted_actions
-
-
-def act_encoder_fn(
-    encoder: nn.Module,
-    obs: chex.Array,
-    decayed_hstate: chex.Array,
-    step_count: chex.Array,
-    chunk_size: int,
-) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    """Chunkwise encoding for ff-Sable and for discrete action spaces."""
-    B, C = obs.shape[:2]
-    v_loc = jnp.zeros((B, C, 1))
-    obs_rep = jnp.zeros((B, C, encoder.net_config.embed_dim))
-
-    # Apply the encoder per chunk
-    num_chunks = C // chunk_size
-    for chunk_id in range(0, num_chunks):
-        start_idx = chunk_id * chunk_size
-        end_idx = (chunk_id + 1) * chunk_size
-        chunk_obs = obs[:, start_idx:end_idx]
-        chunk_step_count = step_count[:, start_idx:end_idx]
-        chunk_v_loc, chunk_obs_rep, decayed_hstate = encoder.recurrent(
-            chunk_obs, decayed_hstate, chunk_step_count
-        )
-        v_loc = v_loc.at[:, start_idx:end_idx].set(chunk_v_loc)
-        obs_rep = obs_rep.at[:, start_idx:end_idx].set(chunk_obs_rep)
-
-    return v_loc, obs_rep, decayed_hstate
 
 
 def autoregressive_act(
