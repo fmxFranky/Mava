@@ -46,7 +46,7 @@ class SimpleRetention(nn.Module):
     memory_config: DictConfig
 
     def setup(self) -> None:
-        # Initialize the weights
+        # Initialise the weights
         self.w_q = self.param(
             "w_q",
             nn.initializers.normal(stddev=1 / self.embed_dim),
@@ -152,7 +152,7 @@ class SimpleRetention(nn.Module):
         # Get the shape of the input: batch size and number of timesteps
         B, T = ts_dones.shape
 
-        # Initialize the mask
+        # Initialise the mask
         timestep_mask = jnp.zeros((B, T, T), dtype=bool)
         all_false = jnp.zeros((B, T, T), dtype=bool)
 
@@ -200,7 +200,7 @@ class SimpleRetention(nn.Module):
             jnp.argmax(timestep_dones, axis=1, keepdims=True),
         )
 
-        # Initialize the decaying matrix 'xi'
+        # Initialise the decaying matrix 'xi'
         xi = jnp.zeros((B, T, 1))
         # Fill 'xi' with decaying values up until the first done step
         for i in range(T):
@@ -234,7 +234,7 @@ class MultiScaleRetention(nn.Module):
         )
         self.decay_kappas = self.decay_kappas * self.decay_scaling_factor
 
-        # Initialize the weights and group norm
+        # Initialise the weights and group norm
         self.w_g = self.param(
             "w_g",
             nn.initializers.normal(stddev=1 / self.embed_dim),
@@ -247,7 +247,7 @@ class MultiScaleRetention(nn.Module):
         )
         self.group_norm = nn.GroupNorm(num_groups=self.n_head)
 
-        # Initialize the retention mechanisms
+        # Initialise the retention mechanisms
         self.retentions = [
             SimpleRetention(
                 self.embed_dim,
