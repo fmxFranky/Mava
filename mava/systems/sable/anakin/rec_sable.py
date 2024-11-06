@@ -417,13 +417,21 @@ def learner_setup(
     config.system.num_agents = n_agents
     config.system.num_actions = action_dim
 
+    # Setup memory configs.
+    if config.network.memory_config.timestep_chunk_size:
+        config.network.memory_config.chunk_size = (
+            config.network.memory_config.timestep_chunk_size * n_agents
+        )
+    else:
+        config.network.memory_config.chunk_size = config.system.rollout_length * n_agents
+
     _, action_space_type = get_action_head(env)
 
     # Define network.
     sable_network = SableNetwork(
         n_agents=n_agents,
+        n_agents_per_chunk=n_agents,
         action_dim=action_dim,
-        rollout_length=config.system.rollout_length,
         net_config=config.network.net_config,
         memory_config=config.network.memory_config,
         action_space_type=action_space_type,

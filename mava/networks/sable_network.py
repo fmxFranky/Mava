@@ -345,8 +345,8 @@ class SableNetwork(nn.Module):
     """Sable network module."""
 
     n_agents: int
+    n_agents_per_chunk: int
     action_dim: int
-    rollout_length: int
     net_config: SableNetworkConfig
     memory_config: DictConfig
     action_space_type: str = _DISCRETE
@@ -354,30 +354,6 @@ class SableNetwork(nn.Module):
     def setup(self) -> None:
         if self.action_space_type not in [_DISCRETE]:
             raise ValueError(f"Invalid action space type: {self.action_space_type}")
-
-        self.n_agents_per_chunk = self.n_agents
-        if self.memory_config.type == "ff_sable":
-            self.memory_config.decay_scaling_factor = (
-                1.0  # Create a dummy decay factor for FF Sable
-            )
-            if self.memory_config.agents_chunk_size:
-                self.memory_config.chunk_size = self.memory_config.agents_chunk_size
-                err = "Number of agents should be divisible by chunk size"
-                assert self.n_agents % self.memory_config.chunk_size == 0, err
-                self.n_agents_per_chunk = self.memory_config.chunk_size
-            else:
-                self.memory_config.chunk_size = self.n_agents
-        else:
-            if self.memory_config.timestep_chunk_size:
-                self.memory_config.chunk_size = (
-                    self.memory_config.timestep_chunk_size * self.n_agents
-                )
-            else:
-                self.memory_config.chunk_size = self.rollout_length * self.n_agents
-
-        self.memory_config.timestep_positional_encoding = (
-            self.memory_config.type == "rec_sable"
-        ) and self.memory_config.timestep_positional_encoding
 
         assert (
             self.memory_config.decay_scaling_factor >= 0
@@ -405,12 +381,19 @@ class SableNetwork(nn.Module):
         )
 
         # Set the actor and trainer functions
-        (
-            self.train_encoder_fn,
-            self.train_decoder_fn,
-            self.act_encoder_fn,
-            self.autoregressive_act,
-        ) = self.setup_actor_trainer_fn()
+        self.train_encoder_fn = partial(
+            train_encoder_fn,
+            chunk_size=self.memory_config.chunk_size,
+        )
+        self.train_decoder_fn = partial(
+            train_decoder_fn, n_agents=self.n_agents, chunk_size=self.memory_config.chunk_size
+        )
+
+        self.act_encoder_fn = partial(
+            act_encoder_fn,
+            chunk_size=self.n_agents_per_chunk,
+        )
+        self.autoregressive_act = autoregressive_act
 
     def __call__(
         self,
@@ -489,21 +472,3 @@ class SableNetwork(nn.Module):
         output_actions_log = jnp.squeeze(output_actions_log, axis=-1)
         value = jnp.squeeze(value, axis=-1)
         return output_actions, output_actions_log, value, updated_hs
-
-    def setup_actor_trainer_fn(self) -> Tuple:
-        """Setup the actor and trainer functions."""
-
-        train_enc_fn = partial(
-            train_encoder_fn,
-            chunk_size=self.memory_config.chunk_size,
-        )
-        train_dec_fn = partial(
-            train_decoder_fn, n_agents=self.n_agents, chunk_size=self.memory_config.chunk_size
-        )
-
-        execute_enc_fn = partial(
-            act_encoder_fn,
-            chunk_size=self.n_agents_per_chunk,
-        )
-
-        return train_enc_fn, train_dec_fn, execute_enc_fn, autoregressive_act

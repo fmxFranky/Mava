@@ -386,13 +386,27 @@ def learner_setup(
     config.system.num_agents = n_agents
     config.system.num_actions = action_dim
 
+    # Setup memory config.
+    config.network.memory_config.decay_scaling_factor = (
+        1.0  # Create a dummy decay factor for FF Sable
+    )
+    if config.network.memory_config.agents_chunk_size:
+        config.network.memory_config.chunk_size = config.network.memory_config.agents_chunk_size
+        err = "Number of agents should be divisible by chunk size"
+        assert n_agents % config.network.memory_config.chunk_size == 0, err
+    else:
+        config.network.memory_config.chunk_size = n_agents
+
+    # Set positional encoding to False, since ff-sable does not use temporal dependencies.
+    config.network.memory_config.timestep_positional_encoding = False
+
     _, action_space_type = get_action_head(env)
 
     # Define network.
     sable_network = SableNetwork(
         n_agents=n_agents,
+        n_agents_per_chunk=config.network.memory_config.chunk_size,
         action_dim=action_dim,
-        rollout_length=config.system.rollout_length,
         net_config=config.network.net_config,
         memory_config=config.network.memory_config,
         action_space_type=action_space_type,
