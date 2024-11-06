@@ -24,8 +24,8 @@ from flax import linen as nn
 # B: batch size
 # S: sequence length
 # C: number of agents per chunk of sequence
-# N: number of actions
-# A: number of agents
+# A: number of actions
+# N: number of agents
 
 
 def train_encoder_fn(
@@ -137,17 +137,17 @@ def act_chunkwise(
 def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents: int) -> chex.Array:
     """Get the shifted action sequence for predicting the next action."""
     # Get the batch size, sequence length, and action dimension
-    B, S, N = legal_actions.shape
+    B, S, A = legal_actions.shape
 
     # Create a shifted action sequence for predicting the next action
     # Initialize the shifted action sequence.
-    shifted_actions = jnp.zeros((B, S, N + 1))
+    shifted_actions = jnp.zeros((B, S, A + 1))
 
     # Set the start-of-timestep token (first action as a "start" signal)
-    start_timestep_token = jnp.zeros(N + 1).at[0].set(1)
+    start_timestep_token = jnp.zeros(A + 1).at[0].set(1)
 
     # One hot encode the action
-    one_hot_action = jax.nn.one_hot(action, N)
+    one_hot_action = jax.nn.one_hot(action, A)
 
     # Insert one-hot encoded actions into shifted array, shifting by 1 position
     shifted_actions = shifted_actions.at[:, :, 1:].set(one_hot_action)
@@ -232,16 +232,16 @@ def autoregressive_act(
     step_count: chex.Array,
     key: chex.PRNGKey,
 ) -> Tuple[chex.Array, chex.Array, chex.Array]:
-    B, A, N = legal_actions.shape
+    B, N, A = legal_actions.shape
 
-    shifted_actions = jnp.zeros((B, A, N + 1))
+    shifted_actions = jnp.zeros((B, N, A + 1))
     shifted_actions = shifted_actions.at[:, 0, 0].set(1)
 
-    output_action = jnp.zeros((B, A, 1))
+    output_action = jnp.zeros((B, N, 1))
     output_action_log = jnp.zeros_like(output_action)
 
     # Apply the decoder autoregressively
-    for i in range(A):
+    for i in range(N):
         logit, hstates = decoder.recurrent(
             action=shifted_actions[:, i : i + 1, :],
             obs_rep=obs_rep[:, i : i + 1, :],
@@ -261,7 +261,7 @@ def autoregressive_act(
 
         # Adds all except the last action to shifted_actions, as it is out of range.
         shifted_actions = shifted_actions.at[:, i + 1, 1:].set(
-            jax.nn.one_hot(action[:, 0], N), mode="drop"
+            jax.nn.one_hot(action[:, 0], A), mode="drop"
         )
 
     return output_action.astype(jnp.int32), output_action_log, hstates
