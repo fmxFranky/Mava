@@ -423,7 +423,7 @@ class SableNetwork(nn.Module):
             observation.action_mask,
             observation.step_count,
         )
-        v_loc, obs_rep, _ = self.train_encoder_fn(
+        value, obs_rep, _ = self.train_encoder_fn(
             encoder=self.encoder, obs=obs, hstate=hstates[0], dones=dones, step_count=step_count
         )
 
@@ -438,7 +438,10 @@ class SableNetwork(nn.Module):
             rng_key=rng_key,
         )
 
-        return v_loc, action_log, entropy
+        action_log = jnp.squeeze(action_log, axis=-1)
+        value = jnp.squeeze(value, axis=-1)
+        entropy = jnp.squeeze(entropy, axis=-1)
+        return value, action_log, entropy
 
     def get_actions(
         self,
@@ -456,7 +459,7 @@ class SableNetwork(nn.Module):
         # Decay the hidden states: each timestep we decay the hidden states once
         decayed_hstates = tree.map(lambda x: x * self.decay_kappas, hstates)
 
-        v_loc, obs_rep, updated_enc_hs = self.act_encoder_fn(
+        value, obs_rep, updated_enc_hs = self.act_encoder_fn(
             encoder=self.encoder,
             obs=obs,
             decayed_hstate=decayed_hstates[0],
@@ -474,7 +477,11 @@ class SableNetwork(nn.Module):
 
         # Pack the hidden states
         updated_hs = HiddenStates(encoder=updated_enc_hs, decoder=updated_dec_hs)
-        return output_actions, output_actions_log, v_loc, updated_hs
+
+        output_actions = jnp.squeeze(output_actions, axis=-1)
+        output_actions_log = jnp.squeeze(output_actions_log, axis=-1)
+        value = jnp.squeeze(value, axis=-1)
+        return output_actions, output_actions_log, value, updated_hs
 
     def init_net(
         self,

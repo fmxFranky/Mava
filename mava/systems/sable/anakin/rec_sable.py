@@ -99,9 +99,6 @@ def get_learner_fn(
                 hstates,
                 policy_key,
             )
-            action = jnp.squeeze(action, axis=-1)
-            log_prob = jnp.squeeze(log_prob, axis=-1)
-            value = jnp.squeeze(value, axis=-1)
 
             # STEP ENVIRONMENT
             env_state, timestep = jax.vmap(env.step, in_axes=(0, 0))(env_state, action)
@@ -151,7 +148,6 @@ def get_learner_fn(
         _, _, current_val, _ = sable_action_select_fn(  # type: ignore
             params, last_timestep.observation, updated_hstates, last_val_key
         )
-        current_val = jnp.squeeze(current_val, axis=-1)
         current_done = tree.map(
             lambda x: jnp.repeat(x, config.system.num_agents).reshape(config.arch.num_envs, -1),
             last_timestep.last(),
@@ -215,9 +211,6 @@ def get_learner_fn(
                         prev_hstates,
                         traj_batch.done,
                     )
-                    log_prob = jnp.squeeze(log_prob, axis=-1)
-                    value = jnp.squeeze(value, axis=-1)
-                    entropy = jnp.squeeze(entropy, axis=-1)
 
                     # CALCULATE ACTOR LOSS
                     ratio = jnp.exp(log_prob - traj_batch.log_prob)
@@ -558,9 +551,7 @@ def run_experiment(_config: DictConfig) -> float:
                 hidden_state,
                 key,
             )
-            # Sequenze the output actions
-            actions = jnp.squeeze(output_action, axis=(-1))
-            return actions, {_hidden_state: hidden_state}
+            return output_action, {_hidden_state: hidden_state}
 
         return eval_act_fn
 
