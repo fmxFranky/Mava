@@ -46,6 +46,7 @@ from mava.utils import make_env as environments
 from mava.utils.checkpointing import Checkpointer
 from mava.utils.jax_utils import unreplicate_batch_dim, unreplicate_n_dims
 from mava.utils.logger import LogEvent, MavaLogger
+from mava.utils.network_utils import get_action_head
 from mava.utils.total_timestep_checker import check_total_timesteps
 from mava.utils.training import make_learning_rate
 from mava.wrappers.episode_metrics import get_final_step_metrics
@@ -423,6 +424,8 @@ def learner_setup(
     config.system.num_agents = n_agents
     config.system.num_actions = action_dim
 
+    _, action_space_type = get_action_head(env)
+
     # Define network.
     sable_network = SableNetwork(
         n_agents=n_agents,
@@ -430,7 +433,7 @@ def learner_setup(
         rollout_length=config.system.rollout_length,
         net_config=config.network.net_config,
         memory_config=config.network.memory_config,
-        action_space_type="discrete",
+        action_space_type=action_space_type,
     )
 
     # Define optimiser.

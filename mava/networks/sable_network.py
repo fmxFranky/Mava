@@ -33,6 +33,7 @@ from mava.networks.utils.sable import (
 )
 from mava.systems.sable.types import HiddenStates, SableNetworkConfig
 from mava.types import Observation
+from mava.utils.network_utils import _CONTINUOUS, _DISCRETE
 
 
 class EncodeBlock(nn.Module):
@@ -247,28 +248,30 @@ class Decoder(nn.Module):
     memory_config: DictConfig
     n_agents: int
     action_dim: int
-    action_space_type: str = "discrete"
+    action_space_type: str = _DISCRETE
 
     def setup(self) -> None:
         self.ln = nn.RMSNorm()
 
-        if self.action_space_type == "discrete":
-            self.action_encoder = nn.Sequential(
-                [
-                    nn.Dense(
-                        self.net_config.embed_dim,
-                        use_bias=False,
-                        kernel_init=orthogonal(jnp.sqrt(2)),
-                    ),
-                    nn.gelu,
-                ],
-            )
-            self.log_std = None
-        else:
-            self.action_encoder = nn.Sequential(
-                [nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))), nn.gelu],
-            )
-            self.log_std = self.param("log_std", nn.initializers.zeros, (self.action_dim,))
+        use_bias = self.action_space_type == _CONTINUOUS
+        self.action_encoder = nn.Sequential(
+            [
+                nn.Dense(
+                    self.net_config.embed_dim,
+                    use_bias=use_bias,
+                    kernel_init=orthogonal(jnp.sqrt(2)),
+                ),
+                nn.gelu,
+            ],
+        )
+
+        # Always initialize log_std but set to None for discrete action spaces
+        # This ensures the attribute exists but signals it should not be used.
+        self.log_std = (
+            self.param("log_std", nn.initializers.zeros, (self.action_dim,))
+            if self.action_space_type == _CONTINUOUS
+            else None
+        )
 
         self.head = nn.Sequential(
             [
@@ -347,12 +350,11 @@ class SableNetwork(nn.Module):
     rollout_length: int
     net_config: SableNetworkConfig
     memory_config: DictConfig
-    action_space_type: str = "discrete"
+    action_space_type: str = _DISCRETE
 
     def setup(self) -> None:
-        assert self.action_space_type in [
-            "discrete",
-        ], "Invalid action space type"
+        if self.action_space_type not in [_DISCRETE]:
+            raise ValueError(f"Invalid action space type: {self.action_space_type}")
 
         self.n_agents_per_chunk = self.n_agents
         if self.memory_config.type == "ff_sable":
