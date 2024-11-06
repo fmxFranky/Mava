@@ -279,13 +279,12 @@ class MultiScaleRetention(nn.Module):
         key, query, value = self.pe(key, query, value, step_count)
 
         ret_output = jnp.zeros((B, C, self.head_size), dtype=value.dtype)
-        hs = jnp.copy(hstate)
         for head in range(self.n_head):
             y, new_hs = self.retention_heads[head](key, query, value, hstate[:, head], dones)
             ret_output = ret_output.at[
                 :, :, self.head_size * head : self.head_size * (head + 1)
             ].set(y)
-            hs = hs.at[:, head, :, :].set(new_hs)
+            hstate = hstate.at[:, head, :, :].set(new_hs)
 
         ret_output = self.group_norm(ret_output.reshape(-1, self.head_size)).reshape(
             ret_output.shape
@@ -293,7 +292,7 @@ class MultiScaleRetention(nn.Module):
 
         x = key
         output = (jax.nn.swish(x @ self.w_g) * ret_output) @ self.w_o
-        return output, hs
+        return output, hstate
 
     def recurrent(
         self, key_n: Array, query_n: Array, value_n: Array, hstate: Array, step_count: Array
@@ -305,7 +304,6 @@ class MultiScaleRetention(nn.Module):
         key_n, query_n, value_n = self.pe(key_n, query_n, value_n, step_count)
 
         ret_output = jnp.zeros((B, S, self.head_size), dtype=value_n.dtype)
-        hs = jnp.zeros_like(hstate)  # hidden state per head
         for head in range(self.n_head):
             y, new_hs = self.retention_heads[head].recurrent(
                 key_n, query_n, value_n, hstate[:, head]
@@ -313,7 +311,7 @@ class MultiScaleRetention(nn.Module):
             ret_output = ret_output.at[
                 :, :, self.head_size * head : self.head_size * (head + 1)
             ].set(y)
-            hs = hs.at[:, head, :, :].set(new_hs)
+            hstate = hstate.at[:, head, :, :].set(new_hs)
 
         ret_output = self.group_norm(ret_output.reshape(-1, self.head_size)).reshape(
             ret_output.shape
@@ -321,4 +319,4 @@ class MultiScaleRetention(nn.Module):
 
         x = key_n
         output = (jax.nn.swish(x @ self.w_g) * ret_output) @ self.w_o
-        return output, hs
+        return output, hstate
