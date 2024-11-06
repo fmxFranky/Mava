@@ -132,7 +132,7 @@ def get_learner_fn(
             return learner_state, transition
 
         # COPY OLD HIDDEN STATES: TO BE USED IN THE TRAINING LOOP
-        prev_hstates = tree.map(lambda x: jnp.copy(x), learner_state.hidden_state)
+        prev_hstates = tree.map(lambda x: jnp.copy(x), learner_state.hstates)
 
         # STEP ENVIRONMENT FOR ROLLOUT LENGTH
         learner_state, traj_batch = jax.lax.scan(
@@ -515,7 +515,7 @@ def learner_setup(
         key=step_keys,
         env_state=env_states,
         timestep=timesteps,
-        hidden_state=init_hstates,
+        hstates=init_hstates,
     )
 
     return learn, apply_fns[0], init_learner_state

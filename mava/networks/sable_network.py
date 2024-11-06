@@ -435,7 +435,7 @@ class SableNetwork(nn.Module):
             obs_rep=obs_rep,
             action=action,
             legal_actions=legal_actions,
-            hstates=hstates[1],
+            hstates=hstates[1:],
             dones=dones,
             step_count=step_count,
             rng_key=rng_key,
@@ -473,13 +473,17 @@ class SableNetwork(nn.Module):
             decoder=self.decoder,
             obs_rep=obs_rep,
             legal_actions=legal_actions,
-            hstates=decayed_hstates[1],
+            hstates=decayed_hstates[1:],
             step_count=step_count,
             key=key,
         )
 
         # Pack the hidden states
-        updated_hs = HiddenStates(encoder=updated_enc_hs, decoder=updated_dec_hs)
+        updated_hs = HiddenStates(
+            encoder=updated_enc_hs,
+            decoder_self_retn=updated_dec_hs[0],
+            decoder_cross_retn=updated_dec_hs[1],
+        )
 
         output_actions = jnp.squeeze(output_actions, axis=-1)
         output_actions_log = jnp.squeeze(output_actions_log, axis=-1)

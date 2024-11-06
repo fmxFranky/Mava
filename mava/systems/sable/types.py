@@ -33,7 +33,8 @@ class HiddenStates(NamedTuple):
     """Hidden states for the encoder and decoder."""
 
     encoder: Array
-    decoder: Tuple[Array, Array]
+    decoder_self_retn: Array
+    decoder_cross_retn: Array
 
 
 class RecLearnerState(NamedTuple):
@@ -44,7 +45,7 @@ class RecLearnerState(NamedTuple):
     key: PRNGKey
     env_state: Array
     timestep: TimeStep
-    hidden_state: HiddenStates
+    hstates: HiddenStates
 
 
 class FFLearnerState(NamedTuple):
