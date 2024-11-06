@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from functools import partial
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 import chex
 import jax.numpy as jnp
@@ -27,7 +27,6 @@ from mava.networks.torsos import SwiGLU
 from mava.networks.utils.sable import (
     act_encoder_fn,
     autoregressive_act,
-    init_sable,
     train_decoder_fn,
     train_encoder_fn,
 )
@@ -482,22 +481,6 @@ class SableNetwork(nn.Module):
         output_actions_log = jnp.squeeze(output_actions_log, axis=-1)
         value = jnp.squeeze(value, axis=-1)
         return output_actions, output_actions_log, value, updated_hs
-
-    def init_net(
-        self,
-        observation: Observation,
-        hstates: HiddenStates,
-        key: chex.PRNGKey,
-    ) -> Any:
-        """Initializating the network."""
-
-        return init_sable(
-            encoder=self.encoder,
-            decoder=self.decoder,
-            observation=observation,
-            hstates=hstates,
-            key=key,
-        )
 
     def setup_actor_trainer_fn(self) -> Tuple:
         """Setup the actor and trainer functions."""

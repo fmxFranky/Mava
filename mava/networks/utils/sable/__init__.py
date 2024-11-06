@@ -16,7 +16,6 @@
 from mava.networks.utils.sable.encoder_decoder_fns import (
     act_encoder_fn,
     autoregressive_act,
-    init_sable,
     train_decoder_fn,
     train_encoder_fn,
 )

@@ -157,43 +157,6 @@ def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents:
     return shifted_actions
 
 
-def init_sable(
-    encoder: nn.Module,
-    decoder: nn.Module,
-    observation: chex.Array,
-    hstates: chex.Array,
-    key: chex.PRNGKey,
-) -> chex.Array:
-    """Initializating the network: Applying non chunkwise encoding-decoding."""
-    # Get the observation, legal actions, and timestep id
-    obs, legal_actions, step_count = (
-        observation.agents_view,
-        observation.action_mask,
-        observation.step_count,
-    )
-
-    # Apply the encoder
-    v_loc, obs_rep, _ = act_encoder_fn(
-        encoder=encoder,
-        obs=obs,
-        decayed_hstate=hstates[0],
-        step_count=step_count,
-        chunk_size=obs.shape[1],
-    )
-
-    # Apply the decoder
-    _ = autoregressive_act(
-        decoder=decoder,
-        obs_rep=obs_rep,
-        legal_actions=legal_actions,
-        hstates=hstates[1],
-        step_count=step_count,
-        key=key,
-    )
-
-    return v_loc
-
-
 def act_encoder_fn(
     encoder: nn.Module,
     obs: chex.Array,

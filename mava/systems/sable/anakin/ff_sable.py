@@ -417,7 +417,7 @@ def learner_setup(
         init_obs,
         init_hs,
         net_key,
-        method="init_net",
+        method="get_actions",
     )
     opt_state = optim.init(params)
 
