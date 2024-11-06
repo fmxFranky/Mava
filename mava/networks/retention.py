@@ -261,7 +261,7 @@ class MultiScaleRetention(nn.Module):
         ]
 
         # Create an instance of the positional encoding
-        self.pe = PositionalEncoding(self.memory_config, self.embed_dim)
+        self.pe = PositionalEncoding(self.embed_dim)
 
     def __call__(
         self,
@@ -276,7 +276,8 @@ class MultiScaleRetention(nn.Module):
         B, C, _ = value.shape
 
         # Positional encoding of the current step
-        key, query, value = self.pe(key, query, value, step_count)
+        if self.memory_config.timestep_positional_encoding:
+            key, query, value = self.pe(key, query, value, step_count)
 
         ret_output = jnp.zeros((B, C, self.head_size), dtype=value.dtype)
         for head in range(self.n_head):

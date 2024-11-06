@@ -19,13 +19,11 @@ import chex
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
-from omegaconf import DictConfig
 
 
 class PositionalEncoding(nn.Module):
     """Positional Encoding for Sable. Encodes position information into sequences"""
 
-    memory_config: DictConfig
     d_model: int
 
     def setup(self) -> None:
@@ -35,23 +33,17 @@ class PositionalEncoding(nn.Module):
         self.div_term = jnp.exp(
             jnp.arange(0, self.d_model, 2) * (-jnp.log(10000.0) / self.d_model)
         )[jnp.newaxis]
-        # Add a flag to enable positional encoding based on the network type
-        self.do_pos_enc = (
-            self.memory_config.type == "rec_sable"
-        ) and self.memory_config.timestep_positional_encoding
 
     def __call__(
         self, key: chex.Array, query: chex.Array, value: chex.Array, position: chex.Array
     ) -> Tuple[chex.Array, chex.Array, chex.Array]:
         """Computes positional encoding for a given sequence of positions."""
-        # Check if positional encoding is enabled
-        if self.do_pos_enc:
-            pe = jax.vmap(self._get_pos_encoding)(position)
+        pe = jax.vmap(self._get_pos_encoding)(position)
 
-            # Add positional encoding to the input tensors
-            key += pe
-            query += pe
-            value += pe
+        # Add positional encoding to the input tensors
+        key += pe
+        query += pe
+        value += pe
 
         return key, query, value
 

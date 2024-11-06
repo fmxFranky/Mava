@@ -375,6 +375,10 @@ class SableNetwork(nn.Module):
             else:
                 self.memory_config.chunk_size = self.rollout_length * self.n_agents
 
+        self.memory_config.timestep_positional_encoding = (
+            self.memory_config.type == "rec_sable"
+        ) and self.memory_config.timestep_positional_encoding
+
         assert (
             self.memory_config.decay_scaling_factor >= 0
             and self.memory_config.decay_scaling_factor <= 1
