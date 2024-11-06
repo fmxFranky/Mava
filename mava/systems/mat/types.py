@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
 from typing import Callable, Tuple
 
 import chex
@@ -35,8 +34,7 @@ class LearnerState(NamedTuple):
     timestep: TimeStep
 
 
-@dataclass
-class MATNetworkConfig:
+class MATNetworkConfig(NamedTuple):
     """Configuration for the MAT network."""
 
     n_block: int
