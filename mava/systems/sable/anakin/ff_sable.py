@@ -436,11 +436,10 @@ def learner_setup(
         ),  # Execution function
         partial(sable_network.apply, hstates=dummy_trainer_hs),  # Training function
     )
-    update_fn = optim.update
     eval_apply_fn = partial(sable_network.apply, method="get_actions")
 
     # Get batched iterated update and replicate it to pmap it over cores.
-    learn = get_learner_fn(env, apply_fns, update_fn, config)
+    learn = get_learner_fn(env, apply_fns, optim.update, config)
     learn = jax.pmap(learn, axis_name="device")
 
     # Initialise environment states and timesteps: across devices and batches.
