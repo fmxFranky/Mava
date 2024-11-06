@@ -162,16 +162,16 @@ def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents:
 def init_sable(
     encoder: nn.Module,
     decoder: nn.Module,
-    obs_carry: chex.Array,
+    observation: chex.Array,
     hstates: chex.Array,
     key: chex.PRNGKey,
 ) -> chex.Array:
     """Initializating the network: Applying non chunkwise encoding-decoding."""
     # Get the observation, legal actions, and timestep id
     obs, legal_actions, step_count = (
-        obs_carry.agents_view,
-        obs_carry.action_mask,
-        obs_carry.step_count,
+        observation.agents_view,
+        observation.action_mask,
+        observation.step_count,
     )
 
     # Apply the encoder

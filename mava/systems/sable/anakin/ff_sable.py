@@ -93,7 +93,7 @@ def get_learner_fn(
             last_obs = last_timestep.observation
             action, log_prob, value, _ = sable_action_select_fn(  # type: ignore
                 params,
-                obs_carry=last_obs,
+                observation=last_obs,
                 key=policy_key,
             )
             action = jnp.squeeze(action, axis=-1)
@@ -139,7 +139,7 @@ def get_learner_fn(
         key, last_val_key = jax.random.split(key)
         _, _, current_val, _ = sable_action_select_fn(  # type: ignore
             params,
-            obs_carry=last_timestep.observation,
+            observation=last_timestep.observation,
             key=last_val_key,
         )
         current_val = jnp.squeeze(current_val, axis=-1)
@@ -195,7 +195,7 @@ def get_learner_fn(
                     # RERUN NETWORK
                     value, log_prob, entropy = sable_apply_fn(  # type: ignore
                         params,
-                        obs_carry=traj_batch.obs,
+                        observation=traj_batch.obs,
                         action=traj_batch.action,
                         dones=traj_batch.done,
                     )
@@ -522,7 +522,7 @@ def run_experiment(_config: DictConfig) -> float:
         ) -> Tuple[Action, Dict]:
             output_action, _, _, _ = actor_apply_fn(  # type: ignore
                 params,
-                obs_carry=timestep.observation,
+                observation=timestep.observation,
                 key=key,
             )
             # Sequenze the output actions

@@ -411,7 +411,7 @@ class SableNetwork(nn.Module):
 
     def __call__(
         self,
-        obs_carry: Observation,
+        observation: Observation,
         action: chex.Array,
         hstates: HiddenStates,
         dones: chex.Array,
@@ -419,9 +419,9 @@ class SableNetwork(nn.Module):
     ) -> Tuple[chex.Array, chex.Array, chex.Array]:
         """Training phase."""
         obs, legal_actions, step_count = (
-            obs_carry.agents_view,
-            obs_carry.action_mask,
-            obs_carry.step_count,
+            observation.agents_view,
+            observation.action_mask,
+            observation.step_count,
         )
         v_loc, obs_rep, _ = self.train_encoder_fn(
             encoder=self.encoder, obs=obs, hstate=hstates[0], dones=dones, step_count=step_count
@@ -442,15 +442,15 @@ class SableNetwork(nn.Module):
 
     def get_actions(
         self,
-        obs_carry: Observation,
+        observation: Observation,
         hstates: HiddenStates,
         key: chex.PRNGKey,
     ) -> Tuple[chex.Array, chex.Array, chex.Array, HiddenStates]:
         """Inference phase."""
         obs, legal_actions, step_count = (
-            obs_carry.agents_view,
-            obs_carry.action_mask,
-            obs_carry.step_count,
+            observation.agents_view,
+            observation.action_mask,
+            observation.step_count,
         )
 
         # Decay the hidden states: each timestep we decay the hidden states once
@@ -478,7 +478,7 @@ class SableNetwork(nn.Module):
 
     def init_net(
         self,
-        obs_carry: Observation,
+        observation: Observation,
         hstates: HiddenStates,
         key: chex.PRNGKey,
     ) -> Any:
@@ -487,7 +487,7 @@ class SableNetwork(nn.Module):
         return init_sable(
             encoder=self.encoder,
             decoder=self.decoder,
-            obs_carry=obs_carry,
+            observation=observation,
             hstates=hstates,
             key=key,
         )
