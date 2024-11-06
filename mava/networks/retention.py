@@ -41,7 +41,7 @@ class SimpleRetention(nn.Module):
     embed_dim: int
     head_size: int
     n_agents: int
-    full_self_retention: bool
+    masked: bool
     decay_kappa: float
     memory_config: DictConfig
 
@@ -136,8 +136,8 @@ class SimpleRetention(nn.Module):
         return decay_matrix
 
     def _causal_mask(self, matrix: Array) -> Array:
-        """Applies a causal mask to the input matrix if `full_self_retention` is false."""
-        if not self.full_self_retention:
+        """Applies a causal mask to the input matrix if `masked` is True."""
+        if self.masked:
             mask_agents = jnp.tril(jnp.ones((matrix.shape[1], matrix.shape[1])))
             matrix = mask_agents[None, :, :] * matrix
         return matrix
@@ -221,7 +221,7 @@ class MultiScaleRetention(nn.Module):
     n_head: int
     n_agents: int
     memory_config: DictConfig
-    full_self_retention: bool = False
+    masked: bool = True
     decay_scaling_factor: float = 1.0
 
     def setup(self) -> None:
@@ -253,7 +253,7 @@ class MultiScaleRetention(nn.Module):
                 self.embed_dim,
                 self.head_size,
                 self.n_agents,
-                self.full_self_retention,
+                self.masked,
                 decay_kappa,
                 self.memory_config,
             )

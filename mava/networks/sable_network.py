@@ -51,7 +51,7 @@ class EncodeBlock(nn.Module):
             embed_dim=self.net_config.embed_dim,
             n_head=self.net_config.n_head,
             n_agents=self.n_agents,
-            full_self_retention=True,  # Full retention for the encoder
+            masked=False,  # Full retention for the encoder
             memory_config=self.memory_config,
             decay_scaling_factor=self.memory_config.decay_scaling_factor,
         )
@@ -169,7 +169,7 @@ class DecodeBlock(nn.Module):
             embed_dim=self.net_config.embed_dim,
             n_head=self.net_config.n_head,
             n_agents=self.n_agents,
-            full_self_retention=False,  # Masked retention for the decoder
+            masked=True,  # Masked retention for the decoder
             memory_config=self.memory_config,
             decay_scaling_factor=self.memory_config.decay_scaling_factor,
         )
@@ -177,7 +177,7 @@ class DecodeBlock(nn.Module):
             embed_dim=self.net_config.embed_dim,
             n_head=self.net_config.n_head,
             n_agents=self.n_agents,
-            full_self_retention=False,  # Masked retention for the decoder
+            masked=True,  # Masked retention for the decoder
             memory_config=self.memory_config,
             decay_scaling_factor=self.memory_config.decay_scaling_factor,
         )
