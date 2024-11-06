@@ -259,13 +259,9 @@ def autoregressive_act(
         output_action = output_action.at[:, i, :].set(action)
         output_action_log = output_action_log.at[:, i, :].set(action_log)
 
-        update_shifted_action = i + 1 < A
-        shifted_actions = jax.lax.cond(
-            update_shifted_action,
-            lambda action=action, i=i, shifted_actions=shifted_actions: shifted_actions.at[
-                :, i + 1, 1:
-            ].set(jax.nn.one_hot(action[:, 0], N)),
-            lambda shifted_actions=shifted_actions: shifted_actions,
+        # Adds all except the last action to shifted_actions, as it is out of range.
+        shifted_actions = shifted_actions.at[:, i + 1, 1:].set(
+            jax.nn.one_hot(action[:, 0], N), mode="drop"
         )
 
     return output_action.astype(jnp.int32), output_action_log, hstates
