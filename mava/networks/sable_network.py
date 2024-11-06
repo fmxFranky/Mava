@@ -361,7 +361,7 @@ class SableNetwork(nn.Module):
             self.memory_config.decay_scaling_factor = (
                 1.0  # Create a dummy decay factor for FF Sable
             )
-            if self.memory_config.use_chunkwise:
+            if self.memory_config.agents_chunk_size:
                 self.memory_config.chunk_size = self.memory_config.agents_chunk_size
                 err = "Number of agents should be divisible by chunk size"
                 assert self.n_agents % self.memory_config.chunk_size == 0, err
@@ -369,7 +369,7 @@ class SableNetwork(nn.Module):
             else:
                 self.memory_config.chunk_size = self.n_agents
         else:
-            if self.memory_config.use_chunkwise:
+            if self.memory_config.timestep_chunk_size:
                 self.memory_config.chunk_size = (
                     self.memory_config.timestep_chunk_size * self.n_agents
                 )
