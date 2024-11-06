@@ -48,4 +48,4 @@ ActorApply = Callable[
     [FrozenDict, MavaObservation, PRNGKey],
     Tuple[Array, Array, Array, Array],
 ]
-TrainingApply = Callable[[FrozenDict, MavaObservation, Array, PRNGKey], Tuple[Array, Array, Array]]
+LearnerApply = Callable[[FrozenDict, MavaObservation, Array, PRNGKey], Tuple[Array, Array, Array]]

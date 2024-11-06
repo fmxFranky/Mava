@@ -73,6 +73,6 @@ ActorApply = Callable[
     [FrozenDict, Array, Array, HiddenStates, PRNGKey],
     Tuple[Array, Array, Array, Array, HiddenStates],
 ]
-TrainingApply = Callable[
+LearnerApply = Callable[
     [FrozenDict, Array, Array, Array, HiddenStates, Array, PRNGKey], Tuple[Array, Array, Array]
 ]

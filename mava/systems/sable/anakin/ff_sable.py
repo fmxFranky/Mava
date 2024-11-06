@@ -36,7 +36,7 @@ from mava.networks import SableNetwork
 from mava.networks.utils.sable import get_init_hidden_state
 from mava.systems.sable.types import (
     ActorApply,
-    TrainingApply,
+    LearnerApply,
     Transition,
 )
 from mava.systems.sable.types import FFLearnerState as LearnerState
@@ -53,7 +53,7 @@ from mava.wrappers.episode_metrics import get_final_step_metrics
 
 def get_learner_fn(
     env: Environment,
-    apply_fns: Tuple[ActorApply, TrainingApply],
+    apply_fns: Tuple[ActorApply, LearnerApply],
     update_fn: optax.TransformUpdateFn,
     config: DictConfig,
 ) -> LearnerFn[LearnerState]:
