@@ -136,7 +136,6 @@ def act_decoder_fn(
 
 def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents: int) -> chex.Array:
     """Get the shifted action sequence for predicting the next action."""
-    # Get the batch size, sequence length, and action dimension
     B, S, A = legal_actions.shape
 
     # Create a shifted action sequence for predicting the next action
