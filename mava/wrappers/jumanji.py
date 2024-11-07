@@ -24,7 +24,7 @@ from jumanji import specs
 from jumanji.env import Environment
 from jumanji.environments.routing.cleaner import Cleaner
 from jumanji.environments.routing.cleaner.constants import DIRTY, WALL
-from jumanji.environments.routing.connector import MaConnector
+from jumanji.environments.routing.connector import Connector
 from jumanji.environments.routing.connector.constants import (
     EMPTY,
     PATH,
@@ -222,9 +222,9 @@ class ConnectorWrapper(JumanjiMarlWrapper):
     Do not use the AgentID wrapper with this env, it has implicit agent IDs.
     """
 
-    def __init__(self, env: MaConnector, add_global_state: bool = False):
+    def __init__(self, env: Connector, add_global_state: bool = False):
         super().__init__(env, add_global_state)
-        self._env: MaConnector
+        self._env: Connector
 
     def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
         """Modify the timestep for the Connector environment."""
@@ -247,16 +247,6 @@ class ConnectorWrapper(JumanjiMarlWrapper):
             )
             return agents_view
 
-        def aggregate_rewards(
-            timestep: TimeStep,
-        ) -> TimeStep[Observation]:
-            """Aggregate individual rewards and discounts across agents."""
-            team_reward = jnp.sum(timestep.reward)
-            reward = jnp.repeat(team_reward, self.num_agents)
-            return timestep.replace(reward=reward)
-
-        timestep = aggregate_rewards(timestep)
-
         obs_data = {
             "agents_view": create_agents_view(timestep.observation.grid),
             "action_mask": timestep.observation.action_mask,
@@ -266,7 +256,11 @@ class ConnectorWrapper(JumanjiMarlWrapper):
         # The episode is won if all agents have connected.
         extras = timestep.extras | {"won_episode": timestep.extras["ratio_connections"] == 1.0}
 
-        return timestep.replace(observation=Observation(**obs_data), extras=extras)
+        reward = jnp.repeat(timestep.reward, self.num_agents)
+        discount = jnp.repeat(timestep.discount, self.num_agents)
+        return timestep.replace(
+            observation=Observation(**obs_data), reward=reward, discount=discount, extras=extras
+        )
 
     def get_global_state(self, obs: Observation) -> chex.Array:
         """Constructs the global state from the global information
@@ -335,16 +329,16 @@ def _get_location(grid: chex.Array) -> chex.Array:
 
 
 class VectorConnectorWrapper(JumanjiMarlWrapper):
-    """Multi-agent wrapper for the MaConnector environment.
+    """Multi-agent wrapper for the Connector environment.
 
     This wrapper transforms the grid-based observation to a vector of features. This env should
     have the AgentID wrapper applied to it since there is not longer a channel that can encode
     AgentID information.
     """
 
-    def __init__(self, env: MaConnector, add_global_state: bool = False):
+    def __init__(self, env: Connector, add_global_state: bool = False):
         super().__init__(env, add_global_state)
-        self._env: MaConnector
+        self._env: Connector
         self.fov = 2
 
     def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
