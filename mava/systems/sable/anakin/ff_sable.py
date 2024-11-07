@@ -387,9 +387,8 @@ def learner_setup(
     config.system.num_actions = action_dim
 
     # Setting the chunksize - many agent problems require chunking agents
-    config.network.memory_config.decay_scaling_factor = (
-        1.0  # Create a dummy decay factor for FF Sable
-    )
+    # Create a dummy decay factor for FF Sable
+    config.network.memory_config.decay_scaling_factor = 1.0
     if config.network.memory_config.agents_chunk_size:
         config.network.memory_config.chunk_size = config.network.memory_config.agents_chunk_size
         err = "Number of agents should be divisible by chunk size"
