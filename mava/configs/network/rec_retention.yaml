@@ -13,4 +13,4 @@ memory_config:
   # --- Chunking ---
   timestep_chunk_size: ~ # Size of the chunk: calculated over timesteps dim.
   # For example a chunksize of 2 results in a sequence length of 2 * num_agents because there num_agents observations within a timestep
-  # If unspecified, the rollout length is used as the chunk size which means that we deal with the full rollout length.
+  # If unspecified, the rollout length is used as the chunk size which means that the entire rollout is computed in parallel during training.

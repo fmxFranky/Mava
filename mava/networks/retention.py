@@ -42,7 +42,7 @@ class SimpleRetention(nn.Module):
     head_size: int
     n_agents: int
     masked: bool
-    decay_kappa: float
+    decay_kappa: float  # this is gamma in the original retention implementation
     memory_config: DictConfig
 
     def setup(self) -> None:
@@ -200,7 +200,6 @@ class SimpleRetention(nn.Module):
             jnp.argmax(timestep_dones, axis=1, keepdims=True),
         )
 
-        # Initialise the decaying matrix 'xi'
         xi = jnp.zeros((B, T, 1))
         # Fill 'xi' with decaying values up until the first done step
         for i in range(T):
