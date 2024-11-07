@@ -417,7 +417,7 @@ def learner_setup(
     config.system.num_agents = n_agents
     config.system.num_actions = action_dim
 
-    # Setup memory configs.
+    # Setting the chunksize - smaller chunks save memory at the cost of speed
     if config.network.memory_config.timestep_chunk_size:
         config.network.memory_config.chunk_size = (
             config.network.memory_config.timestep_chunk_size * n_agents
