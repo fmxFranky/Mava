@@ -258,7 +258,7 @@ def get_learner_fn(
 
                 # Calculate critic loss
                 critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
-                critic_loss_info, critic_grads = critic_grad_fn(
+                value_loss_info, critic_grads = critic_grad_fn(
                     params.critic_params, traj_batch, targets
                 )
 
@@ -274,12 +274,12 @@ def get_learner_fn(
                     (actor_grads, actor_loss_info), axis_name="device"
                 )
 
-                critic_grads, critic_loss_info = jax.lax.pmean(
-                    (critic_grads, critic_loss_info), axis_name="batch"
+                critic_grads, value_loss_info = jax.lax.pmean(
+                    (critic_grads, value_loss_info), axis_name="batch"
                 )
                 # pmean over devices.
-                critic_grads, critic_loss_info = jax.lax.pmean(
-                    (critic_grads, critic_loss_info), axis_name="device"
+                critic_grads, value_loss_info = jax.lax.pmean(
+                    (critic_grads, value_loss_info), axis_name="device"
                 )
 
                 # Update params and optimiser state
@@ -296,14 +296,14 @@ def get_learner_fn(
                 new_params = Params(actor_new_params, critic_new_params)
                 new_opt_state = OptStates(actor_new_opt_state, critic_new_opt_state)
 
-                actor_loss, (raw_actor_loss, entropy) = actor_loss_info
-                critic_loss, raw_critic_loss = critic_loss_info
+                actor_loss, (_, entropy) = actor_loss_info
+                value_loss, unscaled_value_loss = value_loss_info
 
-                total_loss = actor_loss + critic_loss
+                total_loss = actor_loss + value_loss
                 loss_info = {
                     "total_loss": total_loss,
-                    "value_loss": raw_critic_loss,
-                    "actor_loss": raw_actor_loss,
+                    "value_loss": unscaled_value_loss,
+                    "actor_loss": actor_loss,
                     "entropy": entropy,
                 }
 
