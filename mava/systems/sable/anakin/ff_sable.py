@@ -538,7 +538,9 @@ def run_experiment(_config: DictConfig) -> float:
     # One key per device for evaluation.
     eval_keys = jax.random.split(key_e, n_devices)
     # Define Apply fn for evaluation.
-    # Create a fake hstate: will not be updated during steps
+    # Create an hstate with only zeros. This will never be updated over timesteps,
+    # but will be updated between agents in a given timestep since ff_sable has no
+    # memory over time. 
     eval_batch_size = get_num_eval_envs(config, absolute_metric=False)
     eval_hs = get_init_hidden_state(config.network.net_config, eval_batch_size)
     sable_execution_fn = partial(sable_execution_fn, hstates=eval_hs)
