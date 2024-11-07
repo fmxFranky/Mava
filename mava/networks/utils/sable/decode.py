@@ -29,6 +29,9 @@ from mava.networks.distributions import TanhTransformedDistribution
 # A: number of actions
 # N: number of agents
 
+# Constant to avoid numerical instability
+_MIN_SCALE = 1e-3
+
 
 def discrete_train_decoder_fn(
     decoder: nn.Module,
@@ -168,10 +171,6 @@ def continuous_train_decoder_fn(
     del legal_actions
 
     B, S, _ = action.shape
-
-    # todo: double check if this needs to be a param
-    min_scale = 1e-3
-
     shifted_actions = get_shifted_continuous_actions(action, action_dim, n_agents=n_agents)
     act_mean = jnp.zeros((B, S, action_dim), dtype=jnp.float32)
 
@@ -194,7 +193,7 @@ def continuous_train_decoder_fn(
         )
         act_mean = act_mean.at[:, start_idx:end_idx].set(chunked_act_mean)
 
-    action_std = jax.nn.softplus(decoder.log_std) + min_scale
+    action_std = jax.nn.softplus(decoder.log_std) + _MIN_SCALE
 
     base_distribution = tfd.Normal(loc=act_mean, scale=action_std)
     distribution = tfd.Independent(
@@ -235,10 +234,7 @@ def continuous_autoregressive_act(
     del legal_actions
 
     B, N = step_count.shape
-    min_scale = 1e-3
-
     shifted_actions = jnp.zeros((B, N, action_dim))
-
     output_action = jnp.zeros((B, N, action_dim))
     output_action_log = jnp.zeros((B, N))
 
@@ -250,7 +246,7 @@ def continuous_autoregressive_act(
             hstates=hstates,
             step_count=step_count[:, i : i + 1],
         )
-        action_std = jax.nn.softplus(decoder.log_std) + min_scale
+        action_std = jax.nn.softplus(decoder.log_std) + _MIN_SCALE
 
         key, sample_key = jax.random.split(key)
 
