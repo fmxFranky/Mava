@@ -44,42 +44,6 @@ def train_decoder_fn(
     del rng_key
 
     shifted_actions = get_shifted_actions(action, legal_actions, n_agents=n_agents)
-
-    logit, _ = act_decoder_fn(
-        decoder=decoder,
-        obs_rep=obs_rep,
-        shifted_actions=shifted_actions,
-        hstates=hstates,
-        dones=dones,
-        step_count=step_count,
-        legal_actions=legal_actions,
-        chunk_size=chunk_size,
-    )
-
-    masked_logits = jnp.where(
-        legal_actions,
-        logit,
-        jnp.finfo(jnp.float32).min,
-    )
-
-    distribution = distrax.Categorical(logits=masked_logits)
-    action_log_prob = distribution.log_prob(action)
-    action_log_prob = jnp.expand_dims(action_log_prob, axis=-1)
-    entropy = jnp.expand_dims(distribution.entropy(), axis=-1)
-
-    return action_log_prob, entropy
-
-
-def act_decoder_fn(
-    decoder: nn.Module,
-    obs_rep: chex.Array,
-    shifted_actions: chex.Array,
-    hstates: Tuple[chex.Array, chex.Array],
-    dones: chex.Array,
-    step_count: chex.Array,
-    legal_actions: chex.Array,
-    chunk_size: int,
-) -> Tuple[chex.Array, Tuple[chex.Array, chex.Array]]:
     logit = jnp.zeros_like(legal_actions, dtype=jnp.float32)
 
     # Apply the decoder per chunk
@@ -87,6 +51,7 @@ def act_decoder_fn(
     for chunk_id in range(0, num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = (chunk_id + 1) * chunk_size
+        # Chunk obs_rep, shifted_actions, dones, and step_count
         chunked_obs_rep = obs_rep[:, start_idx:end_idx]
         chunk_shifted_actions = shifted_actions[:, start_idx:end_idx]
         chunk_dones = dones[:, start_idx:end_idx]
@@ -100,7 +65,18 @@ def act_decoder_fn(
         )
         logit = logit.at[:, start_idx:end_idx].set(chunk_logit)
 
-    return logit, hstates
+    masked_logits = jnp.where(
+        legal_actions,
+        logit,
+        jnp.finfo(jnp.float32).min,
+    )
+
+    distribution = distrax.Categorical(logits=masked_logits)
+    action_log_prob = distribution.log_prob(action)
+    action_log_prob = jnp.expand_dims(action_log_prob, axis=-1)
+    entropy = jnp.expand_dims(distribution.entropy(), axis=-1)
+
+    return action_log_prob, entropy
 
 
 def get_shifted_actions(action: chex.Array, legal_actions: chex.Array, n_agents: int) -> chex.Array:

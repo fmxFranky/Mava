@@ -42,6 +42,7 @@ def train_encoder_fn(
     for chunk_id in range(0, num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = (chunk_id + 1) * chunk_size
+        # Chunk obs, dones, and step_count
         chunk_obs = obs[:, start_idx:end_idx]
         chunk_dones = dones[:, start_idx:end_idx]
         chunk_step_count = step_count[:, start_idx:end_idx]
@@ -71,6 +72,7 @@ def act_encoder_fn(
     for chunk_id in range(0, num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = (chunk_id + 1) * chunk_size
+        # Chunk obs and step_count
         chunk_obs = obs[:, start_idx:end_idx]
         chunk_step_count = step_count[:, start_idx:end_idx]
         chunk_v_loc, chunk_obs_rep, decayed_hstate = encoder.recurrent(
