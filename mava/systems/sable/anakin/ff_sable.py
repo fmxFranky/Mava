@@ -386,7 +386,7 @@ def learner_setup(
     config.system.num_agents = n_agents
     config.system.num_actions = action_dim
 
-    # Setup memory config.
+    # Setting the chunksize - many agent problems require chunking agents
     config.network.memory_config.decay_scaling_factor = (
         1.0  # Create a dummy decay factor for FF Sable
     )
