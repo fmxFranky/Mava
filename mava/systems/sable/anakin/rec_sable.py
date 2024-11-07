@@ -685,7 +685,7 @@ def hydra_entry_point(cfg: DictConfig) -> float:
 
     # Run experiment.
     eval_performance = run_experiment(cfg)
-    print(f"{Fore.CYAN}{Style.BRIGHT}Sable Memory experiment completed{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{Style.BRIGHT}Rec Sable experiment completed{Style.RESET_ALL}")
     return eval_performance
 
 
