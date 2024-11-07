@@ -251,6 +251,7 @@ class JaxMarlWrapper(Wrapper, ABC):
 
         return Observation(**obs_data)
 
+    @cached_property
     def observation_spec(self) -> specs.Spec:
         agents_view = jaxmarl_space_to_jumanji_spec(merge_space(self._env.observation_spaces))
 
@@ -285,12 +286,15 @@ class JaxMarlWrapper(Wrapper, ABC):
             step_count=step_count,
         )
 
+    @cached_property
     def action_spec(self) -> specs.Spec:
         return jaxmarl_space_to_jumanji_spec(merge_space(self._env.action_spaces))
 
+    @cached_property
     def reward_spec(self) -> specs.Array:
         return specs.Array(shape=(self.num_agents,), dtype=float, name="reward")
 
+    @cached_property
     def discount_spec(self) -> specs.BoundedArray:
         return specs.BoundedArray(
             shape=(self.num_agents,),

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import cached_property
 from typing import Tuple, Union
 
 import chex
@@ -65,6 +66,7 @@ class MatraxWrapper(Wrapper):
         state, timestep = self._env.step(state, action)
         return state, self.modify_timestep(timestep)
 
+    @cached_property
     def observation_spec(self) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
         """Specification of the observation of the environment."""
         step_count = specs.BoundedArray(

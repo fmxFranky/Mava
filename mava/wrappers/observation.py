@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import cached_property
 from typing import Tuple, Union
 
 import chex
@@ -70,6 +71,7 @@ class AgentIDWrapper(Wrapper):
 
         return state, timestep
 
+    @cached_property
     def observation_spec(
         self,
     ) -> Union[specs.Spec[Observation], specs.Spec[ObservationGlobalState]]:

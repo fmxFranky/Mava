@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import cached_property
 from typing import TYPE_CHECKING, Dict, Tuple, Union
 
 import jax
@@ -184,6 +185,7 @@ class GigastepWrapper(Wrapper):
         global_obs = jnp.concatenate(obs, axis=0)
         return jnp.tile(global_obs, (self.num_agents, 1))
 
+    @cached_property
     def observation_spec(self) -> specs.Spec:
         agents_view = specs.BoundedArray(
             (self.num_agents, *self._env.observation_space.shape),
@@ -223,12 +225,15 @@ class GigastepWrapper(Wrapper):
             step_count=step_count,
         )
 
+    @cached_property
     def action_spec(self) -> specs.Spec:
         return specs.MultiDiscreteArray(num_values=jnp.full(self.num_agents, self.action_dim))
 
+    @cached_property
     def reward_spec(self) -> specs.Array:
         return specs.Array(shape=(self.num_agents,), dtype=float, name="reward")
 
+    @cached_property
     def discount_spec(self) -> specs.BoundedArray:
         return specs.BoundedArray(
             shape=(self.num_agents,), dtype=float, minimum=0.0, maximum=1.0, name="discount"

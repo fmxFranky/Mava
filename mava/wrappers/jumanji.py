@@ -91,6 +91,7 @@ class JumanjiMarlWrapper(Wrapper, ABC):
 
         return state, timestep
 
+    @cached_property
     def observation_spec(self) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
         """Specification of the observation of the environment."""
         step_count = specs.BoundedArray(
@@ -144,6 +145,7 @@ class RwareWrapper(JumanjiMarlWrapper):
         discount = jnp.repeat(timestep.discount, self.num_agents)
         return timestep.replace(observation=observation, reward=reward, discount=discount)
 
+    @cached_property
     def observation_spec(
         self,
     ) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
@@ -204,6 +206,7 @@ class LbfWrapper(JumanjiMarlWrapper):
         # Aggregate the list of individual rewards and use a single team_reward.
         return self.aggregate_rewards(timestep, modified_observation)
 
+    @cached_property
     def observation_spec(
         self,
     ) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
@@ -245,6 +248,7 @@ class ConnectorWrapper(JumanjiMarlWrapper):
             agents_view = jnp.stack(
                 (positions, targets, paths, position_per_agent, target_per_agent), -1
             )
+            # agents_view = jnp.repeat(agents_view, self.num_agents, axis=0)
             return agents_view
 
         obs_data = {
@@ -268,17 +272,13 @@ class ConnectorWrapper(JumanjiMarlWrapper):
         """
         return jnp.tile(obs.agents_view[..., :3][0], (obs.agents_view.shape[0], 1, 1, 1))
 
+    @cached_property
     def observation_spec(
         self,
     ) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
         """Specification of the observation of the environment."""
-        step_count = specs.BoundedArray(
-            (self.num_agents,),
-            int,
-            jnp.zeros(self.num_agents, dtype=int),
-            jnp.repeat(self.time_limit, self.num_agents),
-            "step_count",
-        )
+        obs_spec = self._env.observation_spec
+
         agents_view = specs.BoundedArray(
             shape=(self._env.num_agents, self._env.grid_size, self._env.grid_size, 5),
             dtype=float,
@@ -288,8 +288,8 @@ class ConnectorWrapper(JumanjiMarlWrapper):
         )
         obs_data = {
             "agents_view": agents_view,
-            "action_mask": self._env.observation_spec.action_mask,
-            "step_count": step_count,
+            "action_mask": obs_spec.action_mask,
+            "step_count": obs_spec.step_count,
         }
 
         if self.add_global_state:
@@ -403,6 +403,7 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
 
         return timestep.replace(observation=Observation(**obs_data), extras=extras)
 
+    @cached_property
     def observation_spec(
         self,
     ) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
@@ -515,6 +516,7 @@ class CleanerWrapper(JumanjiMarlWrapper):
         """
         return obs.agents_view[..., :3]  # (A, R, C, 3)
 
+    @cached_property
     def observation_spec(self) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
         """Specification of the observation of the environment."""
         step_count = specs.BoundedArray(
