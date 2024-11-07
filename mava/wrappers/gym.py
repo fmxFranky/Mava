@@ -160,16 +160,16 @@ class GymRecordEpisodeMetrics(gymnasium.Wrapper):
     ) -> Tuple[NDArray, Dict]:
         agents_view, info = self._env.reset(seed, options)
 
+        # Reset the metrics
+        self.running_count_episode_return = 0.0
+        self.running_count_episode_length = 0.0
+
         # Create the metrics dict
         metrics = {
             "episode_return": self.running_count_episode_return,
             "episode_length": self.running_count_episode_length,
-            "is_terminal_step": True,
+            "is_terminal_step": False,
         }
-
-        # Reset the metrics
-        self.running_count_episode_return = 0.0
-        self.running_count_episode_length = 0
 
         if "won_episode" in info:
             metrics["won_episode"] = info["won_episode"]
@@ -187,7 +187,7 @@ class GymRecordEpisodeMetrics(gymnasium.Wrapper):
         metrics = {
             "episode_return": self.running_count_episode_return,
             "episode_length": self.running_count_episode_length,
-            "is_terminal_step": False,
+            "is_terminal_step": np.logical_or(terminated, truncated).all().item(),
         }
         if "won_episode" in info:
             metrics["won_episode"] = info["won_episode"]
@@ -338,7 +338,7 @@ def async_multiagent_worker(  # CCR001
                     info,
                 ) = env.step(data)
                 if np.logical_or(terminated, truncated).all():
-                    observation, info = env.reset()
+                    observation, _ = env.reset()
 
                 if shared_memory:
                     write_to_shared_memory(observation_space, index, observation, shared_memory)
