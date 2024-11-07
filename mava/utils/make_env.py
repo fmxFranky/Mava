@@ -64,11 +64,7 @@ _jumanji_registry = {
 
 # Registry mapping environment names directly to the corresponding wrapper classes.
 _matrax_registry = {"Matrax": MatraxWrapper}
-_jaxmarl_registry = {
-    "Smax": SmaxWrapper,
-    "MaBrax": MabraxWrapper,
-    "MPE": MPEWrapper,
-}
+_jaxmarl_registry = {"Smax": SmaxWrapper, "MaBrax": MabraxWrapper, "MPE": MPEWrapper}
 _gigastep_registry = {"Gigastep": GigastepWrapper}
 
 

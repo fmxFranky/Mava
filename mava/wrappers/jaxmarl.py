@@ -253,12 +253,6 @@ class JaxMarlWrapper(Wrapper, ABC):
         return Observation(**obs_data)
 
     def observation_spec(self) -> specs.Spec:
-        if isinstance(self._env, SimpleSpreadMPE):
-            obs, _ = self._env.reset(jax.random.PRNGKey(0))
-            # The shape provided in the `observation_spaces` isn't always the same as
-            # that given after constructing the full agent's obs.
-            self._env.observation_spaces["agent_0"].shape = obs["agent_0"].shape
-
         agents_view = jaxmarl_space_to_jumanji_spec(merge_space(self._env.observation_spaces))
 
         action_mask = specs.BoundedArray(
@@ -438,10 +432,7 @@ class MPEWrapper(JaxMarlWrapper):
     @cached_property
     def state_size(self) -> chex.Array:
         "Get the state size of the global observation"
-        # The shape provided in the `observation_spaces` isn't always the same as
-        # that given after constructing the full agent's obs
-        obs, _ = self._env.reset(jax.random.PRNGKey(0))
-        return obs["agent_0"].shape[0] * self.num_agents
+        return self._env.observation_space(self.agents[0]).shape[0] * self.num_agents
 
     def action_mask(self, wrapped_env_state: Any) -> Array:
         """Get action mask for each agent."""
