@@ -79,7 +79,7 @@ class MatraxWrapper(Wrapper):
             bool,
             "action_mask",
         )
-        obs_spec = self._env.observation_spec()
+        obs_spec = self._env.observation_spec
         obs_data = {
             "agents_view": obs_spec.agent_obs,
             "action_mask": action_mask,

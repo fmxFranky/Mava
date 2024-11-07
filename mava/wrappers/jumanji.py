@@ -101,7 +101,7 @@ class JumanjiMarlWrapper(Wrapper, ABC):
             "step_count",
         )
 
-        obs_spec = self._env.observation_spec()
+        obs_spec = self._env.observation_spec
         obs_data = {
             "agents_view": obs_spec.agents_view,
             "action_mask": obs_spec.action_mask,
@@ -123,7 +123,7 @@ class JumanjiMarlWrapper(Wrapper, ABC):
     @cached_property
     def action_dim(self) -> chex.Array:
         """Get the actions dim for each agent."""
-        return int(self._env.action_spec().num_values[0])
+        return int(self._env.action_spec.num_values[0])
 
 
 class RwareWrapper(JumanjiMarlWrapper):
@@ -148,7 +148,7 @@ class RwareWrapper(JumanjiMarlWrapper):
         self,
     ) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
         # need to cast the agents view and global state to floats as we do in modify timestep
-        inner_spec = super().observation_spec()
+        inner_spec = super().observation_spec
         spec = inner_spec.replace(agents_view=inner_spec.agents_view.replace(dtype=float))
         if self.add_global_state:
             spec = spec.replace(global_state=inner_spec.global_state.replace(dtype=float))
@@ -208,7 +208,7 @@ class LbfWrapper(JumanjiMarlWrapper):
         self,
     ) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
         # need to cast the agents view and global state to floats as we do in modify timestep
-        inner_spec = super().observation_spec()
+        inner_spec = super().observation_spec
         spec = inner_spec.replace(agents_view=inner_spec.agents_view.replace(dtype=float))
         if self.add_global_state:
             spec = spec.replace(global_state=inner_spec.global_state.replace(dtype=float))
@@ -294,7 +294,7 @@ class ConnectorWrapper(JumanjiMarlWrapper):
         )
         obs_data = {
             "agents_view": agents_view,
-            "action_mask": self._env.observation_spec().action_mask,
+            "action_mask": self._env.observation_spec.action_mask,
             "step_count": step_count,
         }
 
@@ -434,7 +434,7 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
 
         obs_data = {
             "agents_view": agents_view,
-            "action_mask": self._env.observation_spec().action_mask,
+            "action_mask": self._env.observation_spec.action_mask,
             "step_count": step_count,
         }
 
@@ -539,7 +539,7 @@ class CleanerWrapper(JumanjiMarlWrapper):
         )
         obs_data = {
             "agents_view": agents_view,
-            "action_mask": self._env.observation_spec().action_mask,
+            "action_mask": self._env.observation_spec.action_mask,
             "step_count": step_count,
         }
         if self.add_global_state:

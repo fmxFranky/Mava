@@ -352,7 +352,7 @@ def learner_setup(
     key, actor_net_key = keys
 
     # Initialise observation: Obs for all agents.
-    init_x = env.observation_spec().generate_value()
+    init_x = env.observation_spec.generate_value()
     init_x = tree.map(lambda x: x[None, ...], init_x)
 
     _, action_space_type = get_action_head(env)

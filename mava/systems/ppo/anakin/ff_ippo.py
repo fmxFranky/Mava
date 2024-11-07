@@ -382,7 +382,7 @@ def learner_setup(
     )
 
     # Initialise observation with obs of all agents.
-    obs = env.observation_spec().generate_value()
+    obs = env.observation_spec.generate_value()
     init_x = tree.map(lambda x: x[jnp.newaxis, ...], obs)
 
     # Initialise actor params and optimiser state.

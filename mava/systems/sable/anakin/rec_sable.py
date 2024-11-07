@@ -412,8 +412,8 @@ def learner_setup(
     key, net_key = keys
 
     # Get number of agents and actions.
-    action_dim = int(env.action_spec().num_values[0])
-    n_agents = env.action_spec().shape[0]
+    action_dim = int(env.action_spec.num_values[0])
+    n_agents = env.action_spec.shape[0]
     config.system.num_agents = n_agents
     config.system.num_actions = action_dim
 
@@ -445,7 +445,7 @@ def learner_setup(
     )
 
     # Get mock inputs to initialise network.
-    init_obs = env.observation_spec().generate_value()
+    init_obs = env.observation_spec.generate_value()
     init_obs = tree.map(lambda x: x[jnp.newaxis, ...], init_obs)  # Add batch dim
     init_hs = get_init_hidden_state(config.network.net_config, config.arch.num_envs)
     init_hs = tree.map(lambda x: x[0, jnp.newaxis], init_hs)

@@ -105,11 +105,11 @@ def init(
 
     key, actor_key, q1_key, q2_key, q1_target_key, q2_target_key = jax.random.split(key, 6)
 
-    acts = env.action_spec().generate_value()  # all agents actions
+    acts = env.action_spec.generate_value()  # all agents actions
     act_single = acts[0]  # single agents action
     joint_acts = jnp.concatenate([act_single for _ in range(n_agents)], axis=0)
     joint_acts_batched = joint_acts[jnp.newaxis, ...]  # joint actions with a batch dim
-    obs = env.observation_spec().generate_value()
+    obs = env.observation_spec.generate_value()
     obs_single_batched = tree.map(lambda x: x[0][jnp.newaxis, ...], obs)
 
     # Making actor network
@@ -245,7 +245,7 @@ def make_update_fns(
     actor_net, q_net = networks
     actor_opt, q_opt, alpha_opt = optims
 
-    full_action_shape = (cfg.arch.num_envs, *env.action_spec().shape)
+    full_action_shape = (cfg.arch.num_envs, *env.action_spec.shape)
 
     # losses:
     def q_loss_fn(

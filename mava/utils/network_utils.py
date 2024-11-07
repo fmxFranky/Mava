@@ -24,7 +24,7 @@ _CONTINUOUS = "continuous"
 
 def get_action_head(env: MarlEnv) -> Tuple[Dict[str, str], str]:
     """Returns the appropriate action head config based on the environment action_spec."""
-    if isinstance(env.action_spec(), (DiscreteArray, MultiDiscreteArray)):
+    if isinstance(env.action_spec, (DiscreteArray, MultiDiscreteArray)):
         return {"_target_": "mava.networks.heads.DiscreteActionHead"}, _DISCRETE
 
     return {"_target_": "mava.networks.heads.ContinuousActionHead"}, _CONTINUOUS

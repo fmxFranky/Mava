@@ -483,7 +483,7 @@ def learner_setup(
     )
 
     # Initialise observation with obs of all agents.
-    init_obs = env.observation_spec().generate_value()
+    init_obs = env.observation_spec.generate_value()
     init_obs = tree.map(
         lambda x: jnp.repeat(x[jnp.newaxis, ...], config.arch.num_envs, axis=0),
         init_obs,

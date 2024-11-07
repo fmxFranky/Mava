@@ -378,7 +378,7 @@ def learner_setup(
     )
 
     # Initialise observation with obs of all agents.
-    obs = env.observation_spec().generate_value()
+    obs = env.observation_spec.generate_value()
     init_x = tree.map(lambda x: x[jnp.newaxis, ...], obs)
 
     # Initialise actor params and optimiser state.
@@ -507,7 +507,7 @@ def run_experiment(_config: DictConfig) -> None:
         "observation": jnp.zeros(
             (
                 config.system.num_agents,
-                env.observation_spec().agents_view.shape[1],
+                env.observation_spec.agents_view.shape[1],
             ),
             dtype=jnp.float32,
         ),
