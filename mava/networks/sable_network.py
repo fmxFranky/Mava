@@ -461,7 +461,6 @@ class SableNetwork(nn.Module):
             key=key,
         )
 
-        # Pack the hidden states
         updated_hs = HiddenStates(
             encoder=updated_enc_hs,
             decoder_self_retn=updated_dec_hs[0],
