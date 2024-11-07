@@ -234,6 +234,10 @@ class ConnectorWrapper(JumanjiMarlWrapper):
 
         # TARGET = 3 = The number of different types of items on the grid.
         def create_agents_view(grid: chex.Array) -> chex.Array:
+            # add switch_perspective to change grid:
+            # https://github.com/sash-a/jumanji/blob/f102941b0b5eb4302dbe624048617803a07fe87a/jumanji/environments/routing/connector/utils.py#L182
+            grid = grid[jnp.newaxis, ...]
+            grid = jnp.repeat(grid, self.num_agents, axis=0)
             # Mark position and target of each agent with that agent's normalized index.
             positions = (
                 jnp.where(grid % TARGET == POSITION, jnp.ceil(grid / TARGET), 0) / self.num_agents
