@@ -47,7 +47,6 @@ from mava.wrappers import (
     GymAgentIDWrapper,
     GymRecordEpisodeMetrics,
     GymToJumanji,
-    UoeWrapper,
     LbfWrapper,
     MabraxWrapper,
     MatraxWrapper,
@@ -55,6 +54,7 @@ from mava.wrappers import (
     RwareWrapper,
     SmacWrapper,
     SmaxWrapper,
+    UoeWrapper,
     async_multiagent_worker,
 )
 from mava.wrappers.jaxmarl import JaxMarlWrapper

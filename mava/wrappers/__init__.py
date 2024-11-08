@@ -20,8 +20,8 @@ from mava.wrappers.gym import (
     GymAgentIDWrapper,
     GymRecordEpisodeMetrics,
     GymToJumanji,
-    UoeWrapper,
     SmacWrapper,
+    UoeWrapper,
     async_multiagent_worker,
 )
 from mava.wrappers.jaxmarl import MabraxWrapper, SmaxWrapper

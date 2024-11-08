@@ -66,6 +66,7 @@ class TimeStep:
     def last(self) -> bool:
         return self.step_type == StepType.LAST
 
+
 class UoeWrapper(gymnasium.Wrapper):
     """A base wrapper for multi-agent environments developed by the University of Edinburgh.
     This wrapper is compatible with the RobotWarehouse and Level-Based Foraging environments.
@@ -91,16 +92,14 @@ class UoeWrapper(gymnasium.Wrapper):
         self.num_agents = len(self._env.action_space)
         self.num_actions = self._env.action_space[0].n
 
-        #Tuple(Box(...) * N) --> Box(N, ...)
-        single_obs = self.observation_space[0]
+        # Tuple(Box(...) * N) --> Box(N, ...)
+        single_obs = self.observation_space[0]  # type: ignore
         shape = (self.num_agents, *single_obs.shape)
         low = np.tile(single_obs.low, (self.num_agents, 1))
-        high = np.tile(single_obs.high, (self.num_agents,1) )
-        self.observation_space = spaces.Box(
-            low=low, high=high, shape=shape, dtype=single_obs.dtype
-        )
+        high = np.tile(single_obs.high, (self.num_agents, 1))
+        self.observation_space = spaces.Box(low=low, high=high, shape=shape, dtype=single_obs.dtype)
 
-        #Tuple(Discrete(...) * N) --> Discrete(N, ...)
+        # Tuple(Discrete(...) * N) --> MultiDiscrete(... * N)
         self.action_space = spaces.MultiDiscrete([self.num_actions] * self.num_agents)
 
     def reset(
@@ -233,7 +232,7 @@ class GymAgentIDWrapper(gymnasium.Wrapper):
 
     def modify_space(self, space: spaces.Space) -> spaces.Space:
         if isinstance(space, spaces.Box):
-            new_shape = (space.shape[0] , space.shape[1] + len(self.agent_ids))
+            new_shape = (space.shape[0], space.shape[1] + len(self.agent_ids))
             return spaces.Box(
                 low=space.low[0][0], high=space.high[0][0], shape=new_shape, dtype=space.dtype
             )
