@@ -300,7 +300,7 @@ class MultiScaleRetention(nn.Module):
         """Recurrent representation of the multi-scale retention mechanism"""
         B, S, _ = value_n.shape
 
-        # Positional encoding of the current step
+        # Positional encoding of the current step if enabled
         if self.memory_config.timestep_positional_encoding:
             key_n, query_n, value_n = self.pe(key_n, query_n, value_n, step_count)
 
