@@ -66,10 +66,9 @@ class TimeStep:
     def last(self) -> bool:
         return self.step_type == StepType.LAST
 
-
-class GymWrapper(gymnasium.Wrapper):
-    """Base wrapper for multi-agent gym environments.
-    This wrapper works out of the box for RobotWarehouse and level-based foraging.
+class UoeWrapper(gymnasium.Wrapper):
+    """A base wrapper for multi-agent environments developed by the University of Edinburgh.
+    This wrapper is compatible with the RobotWarehouse and Level-Based Foraging environments.
     """
 
     def __init__(
@@ -91,6 +90,18 @@ class GymWrapper(gymnasium.Wrapper):
         self.add_global_state = add_global_state
         self.num_agents = len(self._env.action_space)
         self.num_actions = self._env.action_space[0].n
+
+        #Tuple(Box(...) * N) --> Box(N, ...)
+        single_obs = self.observation_space[0]
+        shape = (self.num_agents, *single_obs.shape)
+        low = np.tile(single_obs.low, (self.num_agents, 1))
+        high = np.tile(single_obs.high, (self.num_agents,1) )
+        self.observation_space = spaces.Box(
+            low=low, high=high, shape=shape, dtype=single_obs.dtype
+        )
+
+        #Tuple(Discrete(...) * N) --> Discrete(N, ...)
+        self.action_space = spaces.MultiDiscrete([self.num_actions] * self.num_agents)
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[dict] = None
@@ -130,7 +141,7 @@ class GymWrapper(gymnasium.Wrapper):
         return np.tile(global_obs, (self.num_agents, 1))
 
 
-class SmacWrapper(GymWrapper):
+class SmacWrapper(UoeWrapper):
     """A wrapper that converts actions step to integers."""
 
     def step(self, actions: List) -> Tuple[NDArray, NDArray, NDArray, NDArray, Dict]:
@@ -222,9 +233,9 @@ class GymAgentIDWrapper(gymnasium.Wrapper):
 
     def modify_space(self, space: spaces.Space) -> spaces.Space:
         if isinstance(space, spaces.Box):
-            new_shape = (space.shape[0] + len(self.agent_ids),)
+            new_shape = (space.shape[0] , space.shape[1] + len(self.agent_ids))
             return spaces.Box(
-                low=space.low[0], high=space.high[0], shape=new_shape, dtype=space.dtype
+                low=space.low[0][0], high=space.high[0][0], shape=new_shape, dtype=space.dtype
             )
         elif isinstance(space, spaces.Tuple):
             return spaces.Tuple(self.modify_space(s) for s in space)
@@ -268,13 +279,11 @@ class GymToJumanji:
     ) -> Union[Observation, ObservationGlobalState]:
         """Create an observation from the raw observation and environment state."""
 
-        # (N, B, O) -> (B, N, O)
-        obs = np.array(obs).swapaxes(0, 1)
         action_mask = np.stack(info["action_mask"])
         obs_data = {"agents_view": obs, "action_mask": action_mask}
 
         if "global_obs" in info:
-            global_obs = np.array(info["global_obs"]).swapaxes(0, 1)
+            global_obs = np.array(info["global_obs"])
             obs_data["global_state"] = global_obs
             return ObservationGlobalState(**obs_data)
         else:

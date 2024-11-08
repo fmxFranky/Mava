@@ -128,7 +128,7 @@ def rollout(
 
                 # Step environment
                 with RecordTimeTo(actor_timings["env_step_time"]):
-                    timestep = env.step(cpu_action.swapaxes(0, 1))
+                    timestep = env.step(cpu_action)
 
                 dones = np.repeat(timestep.last(), num_agents).reshape(num_envs, -1)
 

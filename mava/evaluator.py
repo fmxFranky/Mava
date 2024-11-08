@@ -277,7 +277,7 @@ def get_sebulba_eval_fn(
             while not finished_eps.all():
                 key, act_key = jax.random.split(key)
                 action, actor_state = act_fn(params, ts, act_key, actor_state)
-                cpu_action = jax.device_get(action).swapaxes(0, 1)
+                cpu_action = jax.device_get(action)
                 ts = env.step(cpu_action)
                 timesteps.append(ts)
 
