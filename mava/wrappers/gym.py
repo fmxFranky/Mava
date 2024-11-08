@@ -42,7 +42,7 @@ warnings.filterwarnings("ignore", module="gymnasium.utils.passive_env_checker")
 
 # needed to avoid host -> device transfers when calling TimeStep.last()
 class StepType(IntEnum):
-    """Copy of Jumanji's step type but with numpy arrays"""
+    """Copy of Jumanji's step type but without jax arrays"""
 
     FIRST = 0
     MID = 1
@@ -232,10 +232,10 @@ class GymAgentIDWrapper(gymnasium.Wrapper):
 
     def modify_space(self, space: spaces.Space) -> spaces.Space:
         if isinstance(space, spaces.Box):
-            new_shape = (space.shape[0], space.shape[1] + len(self.agent_ids))
-            return spaces.Box(
-                low=space.low[0][0], high=space.high[0][0], shape=new_shape, dtype=space.dtype
-            )
+            new_shape = (space.shape[0], space.shape[1] + self.env.num_agents)
+            high = np.concatenate((space.high, np.ones_like(self.agent_ids)), axis=1)
+            low = np.concatenate((space.low, np.zeros_like(self.agent_ids)), axis=1)
+            return spaces.Box(low=low, high=high, shape=new_shape, dtype=space.dtype)
         elif isinstance(space, spaces.Tuple):
             return spaces.Tuple(self.modify_space(s) for s in space)
         else:
@@ -256,11 +256,11 @@ class GymToJumanji:
         num_agents = len(self.env.single_action_space)  # type: ignore
         num_envs = self.env.num_envs
 
-        ep_done = np.zeros(num_envs, dtype=float)
+        step_type = np.full(num_envs, StepType.FIRST)
         rewards = np.zeros((num_envs, num_agents), dtype=float)
         teminated = np.zeros(num_envs, dtype=float)
 
-        timestep = self._create_timestep(obs, ep_done, teminated, rewards, info)
+        timestep = self._create_timestep(obs, step_type, teminated, rewards, info)
 
         return timestep
 
@@ -268,8 +268,9 @@ class GymToJumanji:
         obs, rewards, terminated, truncated, info = self.env.step(action)
 
         ep_done = np.logical_or(terminated, truncated)
+        step_type = np.where(ep_done, StepType.LAST, StepType.MID)
 
-        timestep = self._create_timestep(obs, ep_done, terminated, rewards, info)
+        timestep = self._create_timestep(obs, step_type, terminated, rewards, info)
 
         return timestep
 
@@ -289,12 +290,11 @@ class GymToJumanji:
             return Observation(**obs_data)
 
     def _create_timestep(
-        self, obs: NDArray, ep_done: NDArray, terminated: NDArray, rewards: NDArray, info: Dict
+        self, obs: NDArray, step_type: NDArray, terminated: NDArray, rewards: NDArray, info: Dict
     ) -> TimeStep:
         observation = self._format_observation(obs, info)
         # Filter out the masks and auxiliary data
         extras = {key: value for key, value in info["metrics"].items() if key[0] != "_"}
-        step_type = np.where(ep_done, StepType.LAST, StepType.MID)
 
         return TimeStep(
             step_type=step_type,  # type: ignore

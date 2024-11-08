@@ -249,7 +249,7 @@ def make_gym_env(
 
     def create_gym_env(config: DictConfig, add_global_state: bool = False) -> gymnasium.Env:
         registered_name = f"{config.env.scenario.name}:{config.env.scenario.task_name}"
-        env = gym.make(registered_name, disable_env_checker=False, **config.env.kwargs)
+        env = gym.make(registered_name, disable_env_checker=True, **config.env.kwargs)
         wrapped_env = wrapper(env, config.env.use_shared_rewards, add_global_state)
         if config.system.add_agent_id:
             wrapped_env = GymAgentIDWrapper(wrapped_env)

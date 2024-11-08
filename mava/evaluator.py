@@ -305,9 +305,8 @@ def get_sebulba_eval_fn(
             key, metric = _episode(key)
             metrics.append(metric)
 
-        metrics: Metrics = jax.tree_map(
-            lambda *x: np.array(x).reshape(-1), *metrics
-        )  # flatten metrics
+        # flatten metrics
+        metrics: Metrics = jax.tree_map(lambda *x: np.array(x).reshape(-1), *metrics)
         return metrics
 
     def timed_eval_fn(params: FrozenDict, key: PRNGKey, init_act_state: ActorState) -> Metrics:
