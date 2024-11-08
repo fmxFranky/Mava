@@ -301,7 +301,8 @@ class MultiScaleRetention(nn.Module):
         B, S, _ = value_n.shape
 
         # Positional encoding of the current step
-        key_n, query_n, value_n = self.pe(key_n, query_n, value_n, step_count)
+        if self.memory_config.timestep_positional_encoding:
+            key_n, query_n, value_n = self.pe(key_n, query_n, value_n, step_count)
 
         ret_output = jnp.zeros((B, S, self.head_size), dtype=value_n.dtype)
         for head in range(self.n_head):
