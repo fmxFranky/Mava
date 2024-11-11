@@ -57,6 +57,12 @@ class GigastepWrapper(Wrapper):
             has_global_state (bool): Whether the environment has a global state. Defaults to False.
 
         """
+        # Note: The specs outputs will be cached but some attributes can't be retrieved by
+        # the `self.__getattr__(env,name)` in the parent class (they should share the same names)
+        self.has_global_state = has_global_state
+        self.time_limit = env.max_episode_length
+        self.num_agents = env.n_agents_team1
+        self.action_dim = env.n_actions
         super().__init__(env)
         assert (
             env.discrete_actions
@@ -66,10 +72,6 @@ class GigastepWrapper(Wrapper):
         ), "Only Vector observations are currently supported for Gigastep environments"
 
         self._env: GigastepEnv
-        self.time_limit = self._env.max_episode_length
-        self.num_agents = self._env.n_agents_team1
-        self.action_dim = self._env.n_actions
-        self.has_global_state = has_global_state
 
     def reset(self, key: PRNGKey) -> Tuple[GigastepState, TimeStep]:
         """Reset the Gigastep environment.

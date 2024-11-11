@@ -41,10 +41,12 @@ from mava.types import Observation, ObservationGlobalState, State
 
 class JumanjiMarlWrapper(Wrapper, ABC):
     def __init__(self, env: Environment, add_global_state: bool):
+        # Note: The specs outputs will be cached but some attributes can't be retrieved by
+        # the `self.__getattr__(env,name)` in the parent class (they should share the same names)
+        self.add_global_state = add_global_state
         super().__init__(env)
         self.num_agents = self._env.num_agents
         self.time_limit = self._env.time_limit
-        self.add_global_state = add_global_state
 
     @abstractmethod
     def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
@@ -234,10 +236,11 @@ class ConnectorWrapper(JumanjiMarlWrapper):
 
         # TARGET = 3 = The number of different types of items on the grid.
         def create_agents_view(grid: chex.Array) -> chex.Array:
-            # add switch_perspective to change grid:
+            # add switch_perspective to change grid (@sasha-a what do you think?):
             # https://github.com/sash-a/jumanji/blob/f102941b0b5eb4302dbe624048617803a07fe87a/jumanji/environments/routing/connector/utils.py#L182
             grid = grid[jnp.newaxis, ...]
             grid = jnp.repeat(grid, self.num_agents, axis=0)
+
             # Mark position and target of each agent with that agent's normalized index.
             positions = (
                 jnp.where(grid % TARGET == POSITION, jnp.ceil(grid / TARGET), 0) / self.num_agents
@@ -341,15 +344,20 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
     """
 
     def __init__(self, env: Connector, add_global_state: bool = False):
+        self.fov = 2
         super().__init__(env, add_global_state)
         self._env: Connector
-        self.fov = 2
 
     def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
         """Modify the timestep for the Connector environment."""
 
         # TARGET = 3 = The number of different types of items on the grid.
         def create_agents_view(grid: chex.Array) -> chex.Array:
+            # add switch_perspective to change grid (@sasha-a what do you think?):
+            # https://github.com/sash-a/jumanji/blob/f102941b0b5eb4302dbe624048617803a07fe87a/jumanji/environments/routing/connector/utils.py#L182
+            grid = grid[jnp.newaxis, ...]
+            grid = jnp.repeat(grid, self.num_agents, axis=0)
+
             positions = jnp.where(grid % TARGET == POSITION, True, False)
             targets = jnp.where((grid % TARGET == 0) & (grid != EMPTY), True, False)
             paths = jnp.where(grid % TARGET == PATH, True, False)
@@ -405,7 +413,11 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
         # The episode is won if all agents have connected.
         extras = timestep.extras | {"won_episode": timestep.extras["ratio_connections"] == 1.0}
 
-        return timestep.replace(observation=Observation(**obs_data), extras=extras)
+        reward = jnp.repeat(timestep.reward, self.num_agents)
+        discount = jnp.repeat(timestep.discount, self.num_agents)
+        return timestep.replace(
+            observation=Observation(**obs_data), reward=reward, discount=discount, extras=extras
+        )
 
     @cached_property
     def observation_spec(

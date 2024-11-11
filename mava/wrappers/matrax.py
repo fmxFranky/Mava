@@ -30,6 +30,9 @@ class MatraxWrapper(Wrapper):
     """Multi-agent wrapper for the Matrax environment."""
 
     def __init__(self, env: Environment, add_global_state: bool):
+        # Note: The specs outputs will be cached but some attributes can't be retrieved by
+        # the `self.__getattr__(env,name)` in the parent class (they should share the same names)
+        self.add_global_state = add_global_state
         super().__init__(env)
         self._env: MatrixGame
 
@@ -37,7 +40,6 @@ class MatraxWrapper(Wrapper):
         self.action_dim = self._env.num_actions
         self.time_limit = self._env.time_limit
         self.action_mask = jnp.ones((self.num_agents, self.num_actions), dtype=bool)
-        self.add_global_state = add_global_state
 
     def modify_timestep(
         self, timestep: TimeStep
