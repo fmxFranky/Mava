@@ -1,7 +1,7 @@
 # --- Environment Configs---
 defaults:
   - _self_
-  - scenario: simple_spread_3ag # [simple_spread_3ag, simple_spread_5ag, simple_spread_10ag]
+  - scenario: simple_spread_10ag # [simple_spread_3ag, simple_spread_5ag, simple_spread_10ag]
 
 env_name: MPE  # Used for logging purposes and selection of the corresponding wrapper.
 
@@ -15,4 +15,5 @@ implicit_agent_id: False
 log_win_rate: False
 
 kwargs:
-  action_type: Continuous # Whether agent action spaces are "Continuous" or "Discrete".
+  # Note: We only support `Continuous` actions for now but the `Discrete` version works as well.
+  action_type: Discrete # Whether agent action spaces are "Continuous" or "Discrete".
