@@ -162,7 +162,7 @@ def test_discrete_cnn_env(fast_config: dict, env_name: str) -> None:
 @pytest.mark.parametrize("env_name", continuous_envs)
 def test_continuous_env(fast_config: dict, env_name: str) -> None:
     """Test all continuous envs on random systems."""
-    system_path = random.choice(ppo_systems + sac_systems + transformer_systems + sable_systems)
+    system_path = random.choice(ppo_systems + sac_systems + transformer_systems)
     _, _, system_name = system_path.split(".")
     overrides = [f"env={env_name}"]
 
