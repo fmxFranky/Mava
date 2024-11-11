@@ -440,5 +440,5 @@ class MPEWrapper(JaxMarlWrapper):
 
     def get_global_state(self, wrapped_env_state: Any, obs: Dict[str, Array]) -> Array:
         """Get global state from observation and copy it for each agent."""
-        all_obs = jnp.array([obs[agent] for agent in self._env.agents]).flatten()
-        return jnp.tile(all_obs, (self.num_agents, 1))
+        global_state = jnp.concatenate([obs[agent_id] for agent_id in obs])
+        return jnp.tile(global_state, (self.num_agents, 1))
