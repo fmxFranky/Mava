@@ -285,7 +285,7 @@ def get_sebulba_eval_fn(
 
             timesteps = jax.tree.map(lambda *x: np.stack(x), *timesteps)
 
-            metrics = timesteps.extras
+            metrics = timesteps.extras["episode_metrics"]
             if config.env.log_win_rate:
                 metrics["won_episode"] = timesteps.extras["won_episode"]
 

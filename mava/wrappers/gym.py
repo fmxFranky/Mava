@@ -110,7 +110,7 @@ class UoeWrapper(gymnasium.Wrapper):
 
         agents_view, info = self._env.reset()
 
-        info = {"action_mask": self.get_action_mask(info)}
+        info["action_mask"] = self.get_action_mask(info)
         if self.add_global_state:
             info["global_obs"] = self.get_global_obs(agents_view)
 
@@ -119,7 +119,7 @@ class UoeWrapper(gymnasium.Wrapper):
     def step(self, actions: List) -> Tuple[NDArray, NDArray, NDArray, NDArray, Dict]:
         agents_view, reward, terminated, truncated, info = self._env.step(actions)
 
-        info = {"action_mask": self.get_action_mask(info)}
+        info["action_mask"] = self.get_action_mask(info)
         if self.add_global_state:
             info["global_obs"] = self.get_global_obs(agents_view)
 
@@ -142,6 +142,13 @@ class UoeWrapper(gymnasium.Wrapper):
 
 class SmacWrapper(UoeWrapper):
     """A wrapper that converts actions step to integers."""
+
+    def reset(
+        self, seed: Optional[int] = None, options: Optional[dict] = None
+    ) -> Tuple[NDArray, Dict]:
+        agents_view, info = super().reset()
+        info["won_episode"] = info["battle_won"]
+        return agents_view, info
 
     def step(self, actions: List) -> Tuple[NDArray, NDArray, NDArray, NDArray, Dict]:
         # Convert actions to integers before passing them to the environment
@@ -181,9 +188,6 @@ class GymRecordEpisodeMetrics(gymnasium.Wrapper):
             "is_terminal_step": False,
         }
 
-        if "won_episode" in info:
-            metrics["won_episode"] = info["won_episode"]
-
         info["metrics"] = metrics
 
         return agents_view, info
@@ -199,8 +203,6 @@ class GymRecordEpisodeMetrics(gymnasium.Wrapper):
             "episode_length": self.running_count_episode_length,
             "is_terminal_step": np.logical_or(terminated, truncated).all().item(),
         }
-        if "won_episode" in info:
-            metrics["won_episode"] = info["won_episode"]
 
         info["metrics"] = metrics
 
@@ -294,7 +296,12 @@ class GymToJumanji:
     ) -> TimeStep:
         observation = self._format_observation(obs, info)
         # Filter out the masks and auxiliary data
-        extras = {key: value for key, value in info["metrics"].items() if key[0] != "_"}
+        extras = {}
+        extras["episode_metrics"] = {
+            key: value for key, value in info["metrics"].items() if key[0] != "_"
+        }
+        if "won_episode" in info:
+            extras["won_episode"] = info["won_episode"]
 
         return TimeStep(
             step_type=step_type,  # type: ignore
@@ -346,7 +353,8 @@ def async_multiagent_worker(  # CCR001
                     info,
                 ) = env.step(data)
                 if np.logical_or(terminated, truncated).all():
-                    observation, _ = env.reset()
+                    observation, new_info = env.reset()
+                    info["action_mask"] = new_info["action_mask"]
 
                 if shared_memory:
                     write_to_shared_memory(observation_space, index, observation, shared_memory)

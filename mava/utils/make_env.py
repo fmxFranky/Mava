@@ -78,7 +78,7 @@ _gigastep_registry = {"Gigastep": GigastepWrapper}
 _gym_registry = {
     "RobotWarehouse": UoeWrapper,
     "LevelBasedForaging": UoeWrapper,
-    "SMAC": SmacWrapper,
+    "SMACLite": SmacWrapper,
 }
 
 

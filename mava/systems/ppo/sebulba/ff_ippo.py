@@ -141,7 +141,7 @@ def rollout(
                         timestep.reward,
                         log_prob,
                         obs_tpu,
-                        timestep.extras,
+                        timestep.extras["episode_metrics"],
                     )
                 )
 
