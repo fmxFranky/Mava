@@ -14,9 +14,8 @@
 
 from typing import Dict, Tuple, Union
 
-from jumanji.specs import DiscreteArray, MultiDiscreteArray, Spec
 from gymnasium.spaces import Discrete, MultiDiscrete, Space
-
+from jumanji.specs import DiscreteArray, MultiDiscreteArray, Spec
 
 _DISCRETE = "discrete"
 _CONTINUOUS = "continuous"

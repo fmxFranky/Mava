@@ -404,7 +404,7 @@ def learner_thread(
     for _ in range(config.arch.num_evaluation):
         # Create the lists to store metrics and timings for this learning iteration.
         metrics: List[Tuple[Dict, Dict]] = []
-        rollout_times: List[Dict] = []
+        rollout_times_array: List[Dict] = []
         learn_times: Dict[str, List[float]] = defaultdict(list)
 
         with RecordTimeTo(learn_times["learner_time_per_eval"]):
@@ -423,7 +423,7 @@ def learner_thread(
                     learner_state, ep_metrics, train_metrics = learn_fn(learner_state, traj_batch)
 
                 metrics.append((ep_metrics, train_metrics))
-                rollout_times.append(rollout_time)
+                rollout_times_array.append(rollout_time)
 
                 # Update all the params sources so all actors can get the latest params
                 params = jax.block_until_ready(learner_state.params)
@@ -432,7 +432,7 @@ def learner_thread(
 
         # Pass all the metrics and  params to the main thread (evaluator) for logging and evaluation
         ep_metrics, train_metrics = tree.map(lambda *x: np.asarray(x), *metrics)
-        rollout_times: Dict[str, NDArray] = tree.map(lambda *x: np.mean(x), *rollout_times)
+        rollout_times: Dict[str, NDArray] = tree.map(lambda *x: np.mean(x), *rollout_times_array)
         timing_dict = rollout_times | learn_times
         timing_dict = tree.map(np.mean, timing_dict, is_leaf=lambda x: isinstance(x, list))
 

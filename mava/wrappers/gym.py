@@ -57,13 +57,13 @@ class TimeStep:
     observation: Union[Observation, ObservationGlobalState]
     extras: Dict = field(default_factory=dict)
 
-    def first(self) -> bool:
+    def first(self) -> NDArray:
         return self.step_type == StepType.FIRST
 
-    def mid(self) -> bool:
+    def mid(self) -> NDArray:
         return self.step_type == StepType.MID
 
-    def last(self) -> bool:
+    def last(self) -> NDArray:
         return self.step_type == StepType.LAST
 
 

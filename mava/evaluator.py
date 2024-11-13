@@ -270,7 +270,7 @@ def get_sebulba_eval_fn(
             seeds = np_rng.integers(np.iinfo(np.int32).max, size=n_parallel_envs).tolist()
             ts = env.reset(seed=seeds)
 
-            timesteps = [ts]
+            timesteps_array = [ts]
 
             actor_state = init_act_state
             finished_eps = ts.last()
@@ -280,11 +280,11 @@ def get_sebulba_eval_fn(
                 action, actor_state = act_fn(params, ts, act_key, actor_state)
                 cpu_action = jax.device_get(action)
                 ts = env.step(cpu_action)
-                timesteps.append(ts)
+                timesteps_array.append(ts)
 
                 finished_eps = np.logical_or(finished_eps, ts.last())
 
-            timesteps = jax.tree.map(lambda *x: np.stack(x), *timesteps)
+            timesteps = jax.tree.map(lambda *x: np.stack(x), *timesteps_array)
 
             metrics = timesteps.extras["episode_metrics"]
             if config.env.log_win_rate:
@@ -301,13 +301,13 @@ def get_sebulba_eval_fn(
         # This loop is important because we don't want too many parallel envs.
         # So in evaluation we have num_envs parallel envs and loop enough times
         # so that we do at least `eval_episodes` number of episodes.
-        metrics = []
+        metrics_array = []
         for _ in range(episode_loops):
             key, metric = _episode(key)
-            metrics.append(metric)
+            metrics_array.append(metric)
 
         # flatten metrics
-        metrics: Metrics = jax.tree_map(lambda *x: np.array(x).reshape(-1), *metrics)
+        metrics: Metrics = jax.tree_map(lambda *x: np.array(x).reshape(-1), *metrics_array)
         return metrics
 
     def timed_eval_fn(params: FrozenDict, key: PRNGKey, init_act_state: ActorState) -> Metrics:
