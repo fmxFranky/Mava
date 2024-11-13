@@ -37,6 +37,7 @@ from mava.types import (
     RecActorApply,
     State,
 )
+from mava.wrappers.gym import GymToJumanji
 
 # Optional extras that are passed out of the actor and then into the actor in the next step
 ActorState: TypeAlias = Dict[str, Any]
@@ -211,7 +212,7 @@ def make_rec_eval_act_fn(actor_apply_fn: RecActorApply, config: DictConfig) -> E
 
 
 def get_sebulba_eval_fn(
-    env_maker: Callable,
+    env_maker: Callable[[int, int], GymToJumanji],
     act_fn: EvalActFn,
     config: DictConfig,
     np_rng: np.random.Generator,

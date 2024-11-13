@@ -55,8 +55,8 @@ from mava.wrappers import (
     SmacWrapper,
     SmaxWrapper,
     UoeWrapper,
-    async_multiagent_worker,
     VectorConnectorWrapper,
+    async_multiagent_worker,
 )
 
 # Registry mapping environment names to their generator and wrapper classes.
