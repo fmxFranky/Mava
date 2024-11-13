@@ -229,8 +229,6 @@ def get_learner_fn(
                 loss_info, grads = grad_fn(params, traj_batch, advantages, targets, prev_hstates)
 
                 # Compute the parallel mean (pmean) over the batch.
-                # This calculation is inspired by the Anakin architecture demo notebook.
-                # available at https://tinyurl.com/26tdzs5x
                 # This pmean could be a regular mean as the batch axis is on the same device.
                 grads, loss_info = jax.lax.pmean((grads, loss_info), axis_name="batch")
                 # pmean over devices.
