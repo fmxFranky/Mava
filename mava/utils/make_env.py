@@ -57,6 +57,7 @@ from mava.wrappers import (
     UoeWrapper,
     VectorConnectorWrapper,
     async_multiagent_worker,
+    VectorConnectorWrapper,
 )
 
 # Registry mapping environment names to their generator and wrapper classes.
