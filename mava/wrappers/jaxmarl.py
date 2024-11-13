@@ -188,8 +188,6 @@ class JaxMarlWrapper(Wrapper, ABC):
         # Making sure the child envs set this correctly.
         assert time_limit > 0, f"Time limit must be greater than 0, got {time_limit}"
 
-        # Note: The specs outputs will be cached but some attributes can't be retrieved by
-        # the `self.__getattr__(env,name)` in the parent class (they should share the same names)
         self.has_global_state = has_global_state
         self.time_limit = time_limit
         super().__init__(env)
