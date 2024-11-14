@@ -45,7 +45,7 @@ from mava.systems.ppo.types import LearnerState, OptStates, Params, PPOTransitio
 from mava.types import (
     ActorApply,
     CriticApply,
-    ExperimentOutput,
+    Metrics,
     Observation,
     SebulbaLearnerFn,
 )
@@ -113,6 +113,7 @@ def rollout(
     while not thread_lifetime.should_stop():
         # Rollout
         traj: List[PPOTransition] = []
+        episode_metrics: List[Dict] = []
         actor_timings: Dict[str, List[float]] = defaultdict(list)
         with RecordTimeTo(actor_timings["rollout_time"]):
             for _ in range(config.system.rollout_length):
@@ -142,14 +143,14 @@ def rollout(
                         timestep.reward,
                         log_prob,
                         obs_tpu,
-                        timestep.extras["episode_metrics"],
                     )
                 )
+                episode_metrics.append(timestep.extras["episode_metrics"])
 
         # send trajectories to learner
         with RecordTimeTo(actor_timings["rollout_put_time"]):
             try:
-                rollout_queue.put(traj, timestep, actor_timings)
+                rollout_queue.put(traj, timestep, (actor_timings, episode_metrics))
             except queue.Full:
                 err = "Waited too long to add to the rollout queue, killing the actor thread"
                 warnings.warn(err, stacklevel=2)
@@ -175,7 +176,7 @@ def get_learner_step_fn(
     def _update_step(
         learner_state: LearnerState,
         traj_batch: PPOTransition,
-    ) -> Tuple[LearnerState, Tuple]:
+    ) -> Tuple[LearnerState, Metrics]:
         """A single update of the network.
 
         This function calculates advantages and targets based on the trajectories
@@ -216,7 +217,7 @@ def get_learner_step_fn(
         last_val = critic_apply_fn(params.critic_params, final_timestep.observation)
         advantages, targets = _calculate_gae(traj_batch, last_val)
 
-        def _update_epoch(update_state: Tuple, _: Any) -> Tuple:
+        def _update_epoch(update_state: Tuple, _: Any) -> Tuple[Tuple, Metrics]:
             """Update the network for a single epoch."""
 
             def _update_minibatch(train_state: Tuple, batch_info: Tuple) -> Tuple:
@@ -359,12 +360,11 @@ def get_learner_step_fn(
 
         params, opt_states, traj_batch, advantages, targets, key = update_state
         learner_state = LearnerState(params, opt_states, key, None, learner_state.timestep)
-        metric = traj_batch.info
-        return learner_state, (metric, loss_info)
+        return learner_state, loss_info
 
     def learner_fn(
         learner_state: LearnerState, traj_batch: PPOTransition
-    ) -> ExperimentOutput[LearnerState]:
+    ) -> Tuple[LearnerState, Metrics]:
         """Learner function.
 
         This function represents the learner, it updates the network parameters
@@ -382,13 +382,9 @@ def get_learner_step_fn(
         # This function is shard mapped on the batch axis, but `_update_step` needs
         # the first axis to be time
         traj_batch = tree.map(switch_leading_axes, traj_batch)
-        learner_state, (episode_info, loss_info) = _update_step(learner_state, traj_batch)
+        learner_state, loss_info = _update_step(learner_state, traj_batch)
 
-        return ExperimentOutput(
-            learner_state=learner_state,
-            episode_metrics=episode_info,
-            train_metrics=loss_info,
-        )
+        return learner_state, loss_info
 
     return learner_fn
 
@@ -412,7 +408,7 @@ def learner_thread(
                 # Get the trajectory batch from the pipeline
                 # This is blocking so it will wait until the pipeline has data.
                 with RecordTimeTo(learn_times["rollout_get_time"]):
-                    traj_batch, timestep, rollout_time = pipeline.get(block=True)
+                    traj_batch, timestep, rollout_time, ep_metrics = pipeline.get(block=True)
 
                 # Replace the timestep in the learner state with the latest timestep
                 # This means the learner has access to the entire trajectory as well as
@@ -420,7 +416,7 @@ def learner_thread(
                 learner_state = learner_state._replace(timestep=timestep)
                 # Update the networks
                 with RecordTimeTo(learn_times["learning_time"]):
-                    learner_state, ep_metrics, train_metrics = learn_fn(learner_state, traj_batch)
+                    learner_state, train_metrics = learn_fn(learner_state, traj_batch)
 
                 metrics.append((ep_metrics, train_metrics))
                 rollout_times_array.append(rollout_time)
@@ -515,7 +511,7 @@ def learner_setup(
             learn,
             mesh=mesh,
             in_specs=(learn_state_spec, data_spec),
-            out_specs=ExperimentOutput(learn_state_spec, data_spec, data_spec),
+            out_specs=(learn_state_spec, data_spec),
         )
     )
 
