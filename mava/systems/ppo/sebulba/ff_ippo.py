@@ -241,8 +241,8 @@ def get_learner_step_fn(
                     # Calculate actor loss
                     ratio = jnp.exp(log_prob - traj_batch.log_prob)
                     gae = (gae - gae.mean()) / (gae.std() + 1e-8)
-                    loss_actor1 = ratio * gae
-                    loss_actor2 = (
+                    actor_loss1 = ratio * gae
+                    actor_loss2 = (
                         jnp.clip(
                             ratio,
                             1.0 - config.system.clip_eps,
@@ -250,13 +250,13 @@ def get_learner_step_fn(
                         )
                         * gae
                     )
-                    loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
-                    loss_actor = loss_actor.mean()
+                    actor_loss = -jnp.minimum(actor_loss1, actor_loss2)
+                    actor_loss = actor_loss.mean()
                     # The seed will be used in the TanhTransformedDistribution:
                     entropy = actor_policy.entropy(seed=key).mean()
 
-                    total_loss_actor = loss_actor - config.system.ent_coef * entropy
-                    return total_loss_actor, (loss_actor, entropy)
+                    total_actor_loss = actor_loss - config.system.ent_coef * entropy
+                    return total_actor_loss, (actor_loss, entropy)
 
                 def _critic_loss_fn(
                     critic_params: FrozenDict, traj_batch: PPOTransition, targets: chex.Array
@@ -273,8 +273,8 @@ def get_learner_step_fn(
                     value_losses_clipped = jnp.square(value_pred_clipped - targets)
                     value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
 
-                    critic_total_loss = config.system.vf_coef * value_loss
-                    return critic_total_loss, (value_loss)
+                    total_value_loss = config.system.vf_coef * value_loss
+                    return total_value_loss, value_loss
 
                 # Calculate actor loss
                 key, entropy_key = jax.random.split(key)
@@ -285,7 +285,7 @@ def get_learner_step_fn(
 
                 # Calculate critic loss
                 critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
-                critic_loss_info, critic_grads = critic_grad_fn(
+                value_loss_info, critic_grads = critic_grad_fn(
                     params.critic_params, traj_batch, targets
                 )
 
@@ -299,8 +299,8 @@ def get_learner_step_fn(
                 )
 
                 # pmean over learner devices.
-                critic_grads, critic_loss_info = jax.lax.pmean(
-                    (critic_grads, critic_loss_info), axis_name="learner_devices"
+                critic_grads, value_loss_info = jax.lax.pmean(
+                    (critic_grads, value_loss_info), axis_name="learner_devices"
                 )
 
                 # Update actor params and optimiser state
@@ -319,12 +319,12 @@ def get_learner_step_fn(
                 new_params = Params(actor_new_params, critic_new_params)
                 new_opt_state = OptStates(actor_new_opt_state, critic_new_opt_state)
                 # Pack loss info
-                actor_total_loss, (actor_loss, entropy) = actor_loss_info
-                critic_total_loss, (value_loss) = critic_loss_info
-                total_loss = critic_total_loss + actor_total_loss
+                actor_loss, (_, entropy) = actor_loss_info
+                value_loss, unscaled_value_loss = value_loss_info
+                total_loss = actor_loss + value_loss
                 loss_info = {
                     "total_loss": total_loss,
-                    "value_loss": value_loss,
+                    "value_loss": unscaled_value_loss,
                     "actor_loss": actor_loss,
                     "entropy": entropy,
                 }
