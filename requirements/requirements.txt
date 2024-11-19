@@ -10,8 +10,7 @@ id-marl-eval @ git+https://github.com/instadeepai/marl-eval
 jax==0.4.30
 jaxlib==0.4.30
 jaxmarl @ git+https://github.com/RuanJohn/JaxMARL@unpin-jax  # This only unpins the version of Jax.
-# TODO: revert the feat/ma_connector when the PR is merged in jumanji.
-jumanji @ git+https://github.com/instadeepai/jumanji@feat/ma_connector
+jumanji @ git+https://github.com/instadeepai/jumanji
 lbforaging
 matrax @ git+https://github.com/instadeepai/matrax
 mujoco==3.1.3
