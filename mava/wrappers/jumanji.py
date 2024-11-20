@@ -264,7 +264,6 @@ class ConnectorWrapper(JumanjiMarlWrapper):
             grid = jax.vmap(switch_perspective, in_axes=(None, 0, None))(
                 grid, self.agent_ids, self.num_agents
             )
-
             # Mark position and target of each agent with that agent's normalized index.
             positions = (
                 jnp.where(grid % TARGET == POSITION, jnp.ceil(grid / TARGET), 0) / self.num_agents
@@ -279,7 +278,6 @@ class ConnectorWrapper(JumanjiMarlWrapper):
             agents_view = jnp.stack(
                 (positions, targets, paths, position_per_agent, target_per_agent), -1
             )
-            # agents_view = jnp.repeat(agents_view, self.num_agents, axis=0)
             return agents_view
 
         obs_data = {
@@ -306,8 +304,13 @@ class ConnectorWrapper(JumanjiMarlWrapper):
         self,
     ) -> specs.Spec[Union[Observation, ObservationGlobalState]]:
         """Specification of the observation of the environment."""
-        obs_spec = self._env.observation_spec
-
+        step_count = specs.BoundedArray(
+            (self.num_agents,),
+            int,
+            jnp.zeros(self.num_agents, dtype=int),
+            jnp.repeat(self.time_limit, self.num_agents),
+            "step_count",
+        )
         agents_view = specs.BoundedArray(
             shape=(self._env.num_agents, self._env.grid_size, self._env.grid_size, 5),
             dtype=float,
@@ -317,10 +320,9 @@ class ConnectorWrapper(JumanjiMarlWrapper):
         )
         obs_data = {
             "agents_view": agents_view,
-            "action_mask": obs_spec.action_mask,
-            "step_count": obs_spec.step_count,
+            "action_mask": self._env.observation_spec.action_mask,
+            "step_count": step_count,
         }
-
         if self.add_global_state:
             global_state = specs.BoundedArray(
                 shape=(self._env.num_agents, self._env.grid_size, self._env.grid_size, 3),
@@ -382,7 +384,6 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
             grid = jax.vmap(switch_perspective, in_axes=(None, 0, None))(
                 grid, self.agent_ids, self.num_agents
             )
-
             positions = jnp.where(grid % TARGET == POSITION, True, False)
             targets = jnp.where((grid % TARGET == 0) & (grid != EMPTY), True, False)
             paths = jnp.where(grid % TARGET == PATH, True, False)
@@ -454,7 +455,6 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
             jnp.repeat(self.time_limit, self.num_agents),
             "step_count",
         )
-
         # 2 sets of tiles in fov (blockers and targets) + xy position of agent and target
         tiles_in_fov = (self.fov * 2 + 1) ** 2
         single_agent_obs = 4 + tiles_in_fov * 2
@@ -465,13 +465,11 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
             minimum=-1.0,
             maximum=1.0,
         )
-
         obs_data = {
             "agents_view": agents_view,
             "action_mask": self._env.observation_spec.action_mask,
             "step_count": step_count,
         }
-
         if self.add_global_state:
             global_state = specs.BoundedArray(
                 shape=(self.num_agents, self.num_agents * single_agent_obs),
