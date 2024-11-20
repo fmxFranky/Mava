@@ -417,9 +417,8 @@ def learner_setup(
 
     # Get number of agents and actions.
     action_dim = env.action_dim
-    n_agents = env.action_spec().shape[0]
+    n_agents = env.num_agents
     config.system.num_agents = n_agents
-    config.system.num_actions = action_dim
 
     # Setting the chunksize - smaller chunks save memory at the cost of speed
     if config.network.memory_config.timestep_chunk_size:
@@ -429,7 +428,7 @@ def learner_setup(
     else:
         config.network.memory_config.chunk_size = config.system.rollout_length * n_agents
 
-    _, action_space_type = get_action_head(env.action_spec())
+    _, action_space_type = get_action_head(env.action_spec)
 
     # Define network.
     sable_network = SableNetwork(

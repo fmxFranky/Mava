@@ -372,17 +372,13 @@ def learner_setup(
     # Get available TPU cores.
     n_devices = len(jax.devices())
 
-    # Get number of agents.
-    config.system.num_agents = env.num_agents
-
     # PRNG keys.
     key, net_key = keys
 
     # Get number of agents and actions.
     action_dim = env.action_dim
-    n_agents = env.action_spec().shape[0]
+    n_agents = env.num_agents
     config.system.num_agents = n_agents
-    config.system.num_actions = action_dim
 
     # Setting the chunksize - many agent problems require chunking agents
     # Create a dummy decay factor for FF Sable
@@ -397,7 +393,7 @@ def learner_setup(
     # Set positional encoding to False, since ff-sable does not use temporal dependencies.
     config.network.memory_config.timestep_positional_encoding = False
 
-    _, action_space_type = get_action_head(env.action_spec())
+    _, action_space_type = get_action_head(env.action_spec)
 
     # Define network.
     sable_network = SableNetwork(

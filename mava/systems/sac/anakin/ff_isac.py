@@ -111,7 +111,7 @@ def init(
 
     # Making actor network
     actor_torso = hydra.utils.instantiate(cfg.network.actor_network.pre_torso)
-    action_head, _ = get_action_head(env.action_spec())
+    action_head, _ = get_action_head(env.action_spec)
     actor_action_head = hydra.utils.instantiate(
         action_head, action_dim=env.action_dim, independent_std=False
     )
