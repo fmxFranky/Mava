@@ -412,6 +412,7 @@ def learner_setup(
 
 def run_experiment(_config: DictConfig) -> float:
     """Runs experiment."""
+    _config.logger.system_name = "mat"
     config = copy.deepcopy(_config)
 
     n_devices = len(jax.devices())
@@ -561,7 +562,6 @@ def hydra_entry_point(cfg: DictConfig) -> float:
     """Experiment entry point."""
     # Allow dynamic attributes.
     OmegaConf.set_struct(cfg, False)
-    cfg.logger.system_name = "mat"
 
     eval_performance = run_experiment(cfg)
     jax.block_until_ready(eval_performance)
