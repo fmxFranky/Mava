@@ -206,7 +206,9 @@ def get_learner_fn(
                     )
                     log_prob = actor_policy.log_prob(traj_batch.action)
 
+                    # Calculate actor loss
                     ratio = jnp.exp(log_prob - traj_batch.log_prob)
+                    # Nomalise advantage at minibatch level
                     gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                     actor_loss1 = ratio * gae
                     actor_loss2 = (
@@ -237,7 +239,7 @@ def get_learner_fn(
                         critic_params, traj_batch.hstates.critic_hidden_state[0], obs_and_done
                     )
 
-                    # Calculate value loss
+                    # Clipped MSE loss
                     value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(
                         -config.system.clip_eps, config.system.clip_eps
                     )
@@ -458,7 +460,7 @@ def learner_setup(
         optax.adam(critic_lr, eps=1e-5),
     )
 
-    # Initialise observation with obs of all agents.
+    # Get mock inputs to initialise network.
     init_obs = env.observation_spec().generate_value()
     init_obs = tree.map(
         lambda x: jnp.repeat(x[jnp.newaxis, ...], config.arch.num_envs, axis=0),

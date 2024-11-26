@@ -195,6 +195,7 @@ def get_learner_fn(
 
                     # Calculate actor loss
                     ratio = jnp.exp(log_prob - traj_batch.log_prob)
+                    # Nomalise advantage at minibatch level
                     gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                     actor_loss1 = ratio * gae
                     actor_loss2 = (
@@ -209,12 +210,10 @@ def get_learner_fn(
                     actor_loss = actor_loss.mean()
                     entropy = entropy.mean()
 
-                    # Calculate value loss
+                    # Clipped MSE loss
                     value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(
                         -config.system.clip_eps, config.system.clip_eps
                     )
-
-                    # Mean square error
                     value_losses = jnp.square(value - value_targets)
                     value_losses_clipped = jnp.square(value_pred_clipped - value_targets)
                     value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
