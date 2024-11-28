@@ -40,15 +40,8 @@ from jumanji.wrappers import Wrapper
 from mava.types import Observation, ObservationGlobalState, State
 
 
-def aggregate_rewards(
-    reward: chex.Array, num_agents: int, use_individual_rewards: bool = False
-) -> chex.Array:
+def aggregate_rewards(reward: chex.Array, num_agents: int) -> chex.Array:
     """Aggregate individual rewards across agents."""
-    if use_individual_rewards:
-        # Returns a list of individual rewards that will be used as is.
-        return reward
-
-    # Aggregate the list of individual rewards and use a single team_reward.
     team_reward = jnp.sum(reward)
     return jnp.repeat(team_reward, num_agents)
 
@@ -187,11 +180,11 @@ class LbfWrapper(JumanjiMarlWrapper):
         self,
         env: LevelBasedForaging,
         add_global_state: bool = False,
-        use_individual_rewards: bool = False,
+        aggregate_rewards: bool = False,
     ):
         super().__init__(env, add_global_state)
         self._env: LevelBasedForaging
-        self._use_individual_rewards = use_individual_rewards
+        self._aggregate_rewards = aggregate_rewards
 
     def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
         """Modify the timestep for Level-Based Foraging environment and update
@@ -204,7 +197,9 @@ class LbfWrapper(JumanjiMarlWrapper):
             step_count=jnp.repeat(timestep.observation.step_count, self.num_agents),
         )
         # Whether or not aggregate the list of individual rewards.
-        reward = aggregate_rewards(timestep.reward, self.num_agents, self._use_individual_rewards)
+        reward = timestep.reward
+        if self._aggregate_rewards:
+            reward = aggregate_rewards(reward, self.num_agents)
 
         return timestep.replace(observation=modified_observation, reward=reward)
 
@@ -249,11 +244,11 @@ class ConnectorWrapper(JumanjiMarlWrapper):
     """
 
     def __init__(
-        self, env: Connector, add_global_state: bool = False, use_individual_rewards: bool = False
+        self, env: Connector, add_global_state: bool = False, aggregate_rewards: bool = False
     ):
         super().__init__(env, add_global_state)
         self._env: Connector
-        self._use_individual_rewards = use_individual_rewards
+        self._aggregate_rewards = aggregate_rewards
         self.agent_ids = jnp.arange(self.num_agents)
 
     def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
@@ -290,7 +285,9 @@ class ConnectorWrapper(JumanjiMarlWrapper):
         extras = timestep.extras | {"won_episode": timestep.extras["ratio_connections"] == 1.0}
 
         # Whether or not aggregate the list of individual rewards.
-        reward = aggregate_rewards(timestep.reward, self.num_agents, self._use_individual_rewards)
+        reward = timestep.reward
+        if self._aggregate_rewards:
+            reward = aggregate_rewards(reward, self.num_agents)
         return timestep.replace(observation=Observation(**obs_data), reward=reward, extras=extras)
 
     def get_global_state(self, obs: Observation) -> chex.Array:
@@ -368,12 +365,12 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
     """
 
     def __init__(
-        self, env: Connector, add_global_state: bool = False, use_individual_rewards: bool = False
+        self, env: Connector, add_global_state: bool = False, aggregate_rewards: bool = False
     ):
         self.fov = 2
         super().__init__(env, add_global_state)
         self._env: Connector
-        self._use_individual_rewards = use_individual_rewards
+        self._aggregate_rewards = aggregate_rewards
         self.agent_ids = jnp.arange(self.num_agents)
 
     def modify_timestep(self, timestep: TimeStep) -> TimeStep[Observation]:
@@ -439,8 +436,9 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
         # The episode is won if all agents have connected.
         extras = timestep.extras | {"won_episode": timestep.extras["ratio_connections"] == 1.0}
 
-        # Whether or not aggregate the list of individual rewards.
-        reward = aggregate_rewards(timestep.reward, self.num_agents, self._use_individual_rewards)
+        reward = timestep.reward
+        if self._aggregate_rewards:
+            reward = aggregate_rewards(reward, self.num_agents)
         return timestep.replace(observation=Observation(**obs_data), reward=reward, extras=extras)
 
     @cached_property
