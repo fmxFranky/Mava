@@ -180,7 +180,7 @@ class LbfWrapper(JumanjiMarlWrapper):
         self,
         env: LevelBasedForaging,
         add_global_state: bool = False,
-        aggregate_rewards: bool = False,
+        aggregate_rewards: bool = True,
     ):
         super().__init__(env, add_global_state)
         self._env: LevelBasedForaging
@@ -244,7 +244,7 @@ class ConnectorWrapper(JumanjiMarlWrapper):
     """
 
     def __init__(
-        self, env: Connector, add_global_state: bool = False, aggregate_rewards: bool = False
+        self, env: Connector, add_global_state: bool = False, aggregate_rewards: bool = True
     ):
         super().__init__(env, add_global_state)
         self._env: Connector
@@ -365,7 +365,7 @@ class VectorConnectorWrapper(JumanjiMarlWrapper):
     """
 
     def __init__(
-        self, env: Connector, add_global_state: bool = False, aggregate_rewards: bool = False
+        self, env: Connector, add_global_state: bool = False, aggregate_rewards: bool = True
     ):
         self.fov = 2
         super().__init__(env, add_global_state)
