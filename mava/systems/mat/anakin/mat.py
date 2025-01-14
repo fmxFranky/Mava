@@ -31,8 +31,7 @@ from rich.pretty import pprint
 
 from mava.evaluator import ActorState, get_eval_fn
 from mava.networks.mat_network import MultiAgentTransformer
-from mava.systems.mat.types import ActorApply, LearnerApply, LearnerState
-from mava.systems.ppo.types import PPOTransition
+from mava.systems.mat.types import ActorApply, ByolApply, LearnerApply, LearnerState, PPOTransition
 from mava.types import (
     ExperimentOutput,
     LearnerFn,
@@ -52,15 +51,15 @@ from mava.wrappers.episode_metrics import get_final_step_metrics
 
 def get_learner_fn(
     env: MarlEnv,
-    apply_fns: Tuple[ActorApply, LearnerApply],
-    update_fn: optax.TransformUpdateFn,
+    apply_fns: Tuple[ActorApply, LearnerApply, ByolApply],
+    update_fns: Tuple[optax.TransformUpdateFn, optax.TransformUpdateFn],
     config: DictConfig,
 ) -> LearnerFn[LearnerState]:
     """Get the learner function."""
 
     # Get apply and update functions for actor and critic networks.
-    actor_action_select_fn, actor_apply_fn = apply_fns
-    actor_update_fn = update_fn
+    actor_action_select_fn, actor_apply_fn, byol_apply_fn = apply_fns
+    mat_update_fn, byol_update_fn = update_fns  # Unpack two update functions
 
     def _update_step(learner_state: LearnerState, _: Any) -> Tuple[LearnerState, Tuple]:
         """A single update of the network.
@@ -73,7 +72,7 @@ def get_learner_fn(
         Args:
             learner_state (NamedTuple):
                 - params: The current model parameters.
-                - opt_state: The current optimizer states.
+                - opt_states: The current optimizer states (mat_opt_state, byol_opt_state).
                 - key: The random number generator state.
                 - env_state: The environment state.
                 - last_timestep: The last timestep in the current trajectory.
@@ -98,7 +97,13 @@ def get_learner_fn(
 
             done = timestep.last().repeat(env.num_agents).reshape(config.arch.num_envs, -1)
             transition = PPOTransition(
-                done, action, value, timestep.reward, log_prob, last_timestep.observation
+                done,
+                action,
+                value,
+                timestep.reward,
+                log_prob,
+                last_timestep.observation,
+                timestep.extras["real_next_obs"],
             )
             learner_state = LearnerState(params, opt_state, key, env_state, timestep)
             return learner_state, (transition, timestep.extras["episode_metrics"])
@@ -152,19 +157,20 @@ def get_learner_fn(
 
             def _update_minibatch(train_state: Tuple, batch_info: Tuple) -> Tuple:
                 """Update the network for a single minibatch."""
-                params, opt_state, key = train_state
+                params, opt_states, key = train_state
+                mat_opt_state, byol_opt_state = opt_states
                 traj_batch, advantages, targets = batch_info
 
-                def _loss_fn(
+                def _mat_loss_fn(
                     params: FrozenDict,
                     traj_batch: PPOTransition,
                     gae: chex.Array,
                     value_targets: chex.Array,
                     entropy_key: chex.PRNGKey,
                 ) -> Tuple:
-                    """Calculate the actor loss."""
+                    """Calculate the MAT loss (policy + value)."""
                     # Rerun network
-                    log_prob, value, entropy = actor_apply_fn(  # type: ignore
+                    log_prob, value, entropy = actor_apply_fn(
                         params,
                         traj_batch.obs,
                         traj_batch.action,
@@ -203,38 +209,117 @@ def get_learner_fn(
                     )
                     return total_loss, (actor_loss, entropy, value_loss)
 
-                # Calculate loss
-                key, entropy_key = jax.random.split(key)
-                actor_grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
-                actor_loss_info, actor_grads = actor_grad_fn(
+                def _byol_loss_fn(
+                    params: FrozenDict,
+                    traj_batch: PPOTransition,
+                ) -> Tuple:
+                    """Calculate the BYOL loss."""
+                    if not config.system.use_byol:
+                        return 0.0, {}
+
+                    # Use dedicated BYOL computation function
+                    obs_rep, next_obs_rep, target_next_obs_rep = byol_apply_fn(
+                        params,
+                        traj_batch.obs,
+                        traj_batch.next_obs,
+                        traj_batch.action,
+                    )
+
+                    # Normalize representations
+                    next_obs_rep = next_obs_rep / jnp.linalg.norm(
+                        next_obs_rep, axis=-1, keepdims=True
+                    )
+                    target_next_obs_rep = target_next_obs_rep / jnp.linalg.norm(
+                        target_next_obs_rep, axis=-1, keepdims=True
+                    )
+
+                    # Calculate MSE loss
+                    byol_loss = jnp.mean(
+                        jnp.sum(jnp.square(next_obs_rep - target_next_obs_rep), axis=-1)
+                    )
+
+                    return byol_loss, {"byol_loss": byol_loss}
+
+                # Calculate MAT loss
+                key, mat_key = jax.random.split(key)
+                mat_grad_fn = jax.value_and_grad(_mat_loss_fn, has_aux=True)
+                (mat_loss, mat_loss_info), mat_grads = mat_grad_fn(
                     params,
                     traj_batch,
                     advantages,
                     targets,
-                    entropy_key,
+                    mat_key,
                 )
 
-                actor_grads, actor_loss_info = jax.lax.pmean(
-                    (actor_grads, actor_loss_info), axis_name="batch"
-                )
-                # pmean over devices.
-                actor_grads, actor_loss_info = jax.lax.pmean(
-                    (actor_grads, actor_loss_info), axis_name="device"
+                # Calculate BYOL loss
+                byol_grad_fn = jax.value_and_grad(_byol_loss_fn, has_aux=True)
+                (byol_loss, byol_loss_info), byol_grads = byol_grad_fn(
+                    params,
+                    traj_batch,
                 )
 
-                # Update params and optimiser state
-                actor_updates, new_opt_state = actor_update_fn(actor_grads, opt_state)
-                new_params = optax.apply_updates(params, actor_updates)
+                # Mean over devices and batch
+                mat_grads, mat_loss_info = jax.lax.pmean(
+                    (mat_grads, mat_loss_info), axis_name="device"
+                )
+                mat_grads, mat_loss_info = jax.lax.pmean(
+                    (mat_grads, mat_loss_info), axis_name="batch"
+                )
 
-                total_loss, (actor_loss, entropy, value_loss) = actor_loss_info
+                byol_grads, byol_loss_info = jax.lax.pmean(
+                    (byol_grads, byol_loss_info), axis_name="device"
+                )
+                byol_grads, byol_loss_info = jax.lax.pmean(
+                    (byol_grads, byol_loss_info), axis_name="batch"
+                )
+
+                # Update params with MAT optimizer
+                mat_updates, new_mat_opt_state = mat_update_fn(mat_grads, mat_opt_state)
+                new_params = optax.apply_updates(params, mat_updates)
+
+                # Update params with BYOL optimizer if enabled
+                if config.system.use_byol:
+                    byol_updates, new_byol_opt_state = byol_update_fn(byol_grads, byol_opt_state)
+                    new_params = optax.apply_updates(new_params, byol_updates)
+
+                    # Update target networks using EMA
+                    if isinstance(new_params, FrozenDict):
+                        new_params = new_params.unfreeze()
+                        is_frozen = True
+                    else:
+                        new_params = dict(new_params)  # Create a new dict copy
+                        is_frozen = False
+
+                    if "encoder" in new_params and "target_encoder" in new_params:
+                        new_params["target_encoder"] = optax.incremental_update(
+                            new_params["encoder"],
+                            new_params["target_encoder"],
+                            config.system.target_network_ema,
+                        )
+                    if "projector" in new_params and "target_projector" in new_params:
+                        new_params["target_projector"] = optax.incremental_update(
+                            new_params["projector"],
+                            new_params["target_projector"],
+                            config.system.target_network_ema,
+                        )
+
+                    if is_frozen:
+                        new_params = FrozenDict(new_params)
+                else:
+                    new_byol_opt_state = byol_opt_state
+
+                # Combine loss info
+                actor_loss, entropy, value_loss = mat_loss_info
                 loss_info = {
-                    "total_loss": total_loss,
+                    "total_loss": mat_loss + config.system.byol_coef * byol_loss,
                     "value_loss": value_loss,
                     "actor_loss": actor_loss,
                     "entropy": entropy,
                 }
+                if config.system.use_byol:
+                    loss_info.update(byol_loss_info)
 
-                return (new_params, new_opt_state, key), loss_info
+                return (new_params, (new_mat_opt_state, new_byol_opt_state), key), loss_info
 
             params, opt_state, traj_batch, advantages, targets, key = update_state
             key, batch_shuffle_key, agent_shuffle_key, entropy_key = jax.random.split(key, 4)
@@ -338,27 +423,59 @@ def learner_setup(
         n_agent=config.system.num_agents,
         net_config=config.network,
         action_space_type=action_space_type,
+        use_byol=config.system.use_byol,
     )
 
-    actor_lr = make_learning_rate(config.system.actor_lr, config)
-    actor_optim = optax.chain(
+    # MAT optimizer (for encoder and decoder)
+    mat_lr = make_learning_rate(config.system.actor_lr, config)
+    mat_optim = optax.chain(
         optax.clip_by_global_norm(config.system.max_grad_norm),
-        optax.adam(actor_lr, eps=1e-5),
+        optax.adam(mat_lr, eps=1e-5),
     )
 
-    # Initialise actor params and optimiser state.
-    # `PRNGKey(0)` is just a dummy key we pass through the network since it needs a key for
-    # computing the network entropy at train time.
-    params = actor_network.init(actor_net_key, init_x, init_action, jax.random.PRNGKey(0))
-    opt_state = actor_optim.init(params)
+    # BYOL optimizer (for encoder, dynamic_model, projector, predictor)
+    byol_lr = make_learning_rate(config.system.actor_lr, config)  # Use same learning rate
+    byol_optim = optax.chain(
+        optax.clip_by_global_norm(config.system.max_grad_norm),
+        optax.adam(byol_lr, eps=1e-5),
+    )
+
+    # Initialise actor params and optimisers state.
+    params = actor_network.init(
+        actor_net_key, init_x, init_x, init_action, jax.random.PRNGKey(0), method="init_params"
+    )
+    print(
+        actor_network.tabulate(
+            actor_net_key,
+            init_x,
+            init_x,
+            init_action,
+            jax.random.PRNGKey(0),
+            method="init_params",
+            depth=1,
+        )
+    )
+
+    if config.system.use_byol:
+        assert "target_encoder" in params["params"] and "target_projector" in params["params"], (
+            "BYOL requires target_encoder and target_projector in params"
+        )
+        params["params"]["target_encoder"] = copy.deepcopy(params["params"]["encoder"])
+        params["params"]["target_projector"] = copy.deepcopy(params["params"]["projector"])
+
+    # Initialize states for both optimizers
+    mat_opt_state = mat_optim.init(params)
+    byol_opt_state = byol_optim.init(params)
 
     # Pack apply and update functions.
     apply_fns = (
-        partial(actor_network.apply, method="get_actions"),
-        actor_network.apply,
+        partial(actor_network.apply, method="get_actions"),  # action selection
+        actor_network.apply,  # policy and value computation
+        partial(actor_network.apply, method="get_representations"),  # BYOL computation
     )
+
     # Get batched iterated update and replicate it to pmap it over cores.
-    learn = get_learner_fn(env, apply_fns, actor_optim.update, config)
+    learn = get_learner_fn(env, apply_fns, (mat_optim.update, byol_optim.update), config)
     learn = jax.pmap(learn, axis_name="device")
 
     # Initialise environment states and timesteps: across devices and batches.
@@ -388,7 +505,7 @@ def learner_setup(
 
     # Define params to be replicated across devices and batches.
     key, step_keys = jax.random.split(key)
-    replicate_learner = (params, opt_state, step_keys)
+    replicate_learner = (params, (mat_opt_state, byol_opt_state), step_keys)
 
     # Duplicate learner for update_batch_size.
     broadcast = lambda x: jnp.broadcast_to(x, (config.system.update_batch_size, *x.shape))
@@ -397,8 +514,8 @@ def learner_setup(
     # Duplicate learner across devices.
     replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=jax.devices())
     # Initialise learner state.
-    params, opt_state, step_keys = replicate_learner
-    init_learner_state = LearnerState(params, opt_state, step_keys, env_states, timesteps)
+    params, opt_states, step_keys = replicate_learner
+    init_learner_state = LearnerState(params, opt_states, step_keys, env_states, timesteps)
 
     return learn, actor_network, init_learner_state
 
@@ -445,13 +562,13 @@ def run_experiment(_config: DictConfig) -> float:
 
     # Calculate total timesteps.
     config = check_total_timesteps(config)
-    assert (
-        config.system.num_updates > config.arch.num_evaluation
-    ), "Number of updates per evaluation must be less than total number of updates."
+    assert config.system.num_updates > config.arch.num_evaluation, (
+        "Number of updates per evaluation must be less than total number of updates."
+    )
 
-    assert (
-        config.arch.num_envs % config.system.num_minibatches == 0
-    ), "Number of envs must be divisibile by number of minibatches."
+    assert config.arch.num_envs % config.system.num_minibatches == 0, (
+        "Number of envs must be divisibile by number of minibatches."
+    )
 
     # Calculate number of updates per evaluation.
     config.system.num_updates_per_eval = config.system.num_updates // config.arch.num_evaluation

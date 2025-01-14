@@ -15,6 +15,7 @@
 from typing import Tuple
 
 import chex
+import jax
 import jax.numpy as jnp
 from flax import linen as nn
 from flax.linen.initializers import orthogonal
@@ -211,6 +212,7 @@ class MultiAgentTransformer(nn.Module):
     n_agent: int
     net_config: MATNetworkConfig
     action_space_type: str = _DISCRETE
+    use_byol: bool = False
 
     # General shape names:
     # B: batch size
@@ -223,6 +225,7 @@ class MultiAgentTransformer(nn.Module):
         if self.action_space_type not in [_DISCRETE, _CONTINUOUS]:
             raise ValueError(f"Invalid action space type: {self.action_space_type}")
 
+        # Initialize main network
         self.encoder = Encoder(
             self.action_dim,
             self.n_agent,
@@ -234,6 +237,49 @@ class MultiAgentTransformer(nn.Module):
             self.action_space_type,
             self.net_config,
         )
+        self.dynamic_model = DynamicModel(
+            self.action_dim,
+            self.n_agent,
+            self.net_config,
+            self.action_space_type,
+        )
+
+        # Initialize BYOL related networks only when use_byol is True
+        if self.use_byol:
+            # BYOL projection head
+            self.projector = nn.Sequential(
+                [
+                    nn.Dense(self.net_config.embed_dim * 4, kernel_init=orthogonal(jnp.sqrt(2))),
+                    nn.gelu,
+                    nn.LayerNorm(),
+                    nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                ]
+            )
+
+            # BYOL prediction head
+            self.predictor = nn.Sequential(
+                [
+                    nn.Dense(self.net_config.embed_dim * 4, kernel_init=orthogonal(jnp.sqrt(2))),
+                    nn.gelu,
+                    nn.LayerNorm(),
+                    nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                ]
+            )
+
+            # Initialize target networks
+            self.target_encoder = Encoder(
+                self.action_dim,
+                self.n_agent,
+                self.net_config,
+            )
+            self.target_projector = nn.Sequential(
+                [
+                    nn.Dense(self.net_config.embed_dim * 4, kernel_init=orthogonal(jnp.sqrt(2))),
+                    nn.gelu,
+                    nn.LayerNorm(),
+                    nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                ]
+            )
 
         if self.action_space_type == _DISCRETE:
             self.act_function = discrete_autoregressive_act
@@ -249,9 +295,9 @@ class MultiAgentTransformer(nn.Module):
         observation: MavaObservation,  # (B, N, ...)
         action: chex.Array,  # (B, N, A)
         key: chex.PRNGKey,
-    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
+    ) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array, chex.Array]:
+        # Calculate policy and value
         value, obs_rep = self.encoder(observation.agents_view)
-
         action_log, entropy = self.train_function(
             decoder=self.decoder,
             obs_rep=obs_rep,
@@ -260,8 +306,31 @@ class MultiAgentTransformer(nn.Module):
             legal_actions=observation.action_mask,
             key=key,
         )
-
         return action_log, value, entropy
+
+    def init_params(
+        self,
+        observation: MavaObservation,  # (B, N, ...)
+        next_observation: MavaObservation,  # (B, N, ...)
+        action: chex.Array,  # (B, N, A)
+        key: chex.PRNGKey,
+    ) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array, chex.Array]:
+        # Calculate policy and value
+        value, obs_rep = self.encoder(observation.agents_view)
+        action_log, entropy = self.train_function(
+            decoder=self.decoder,
+            obs_rep=obs_rep,
+            action=action,
+            action_dim=self.action_dim,
+            legal_actions=observation.action_mask,
+            key=key,
+        )
+        # Calculate BYOL representations
+        if self.use_byol:
+            obs_rep, next_obs_rep, target_next_obs_rep = self.get_representations(
+                observation, next_observation, action
+            )
+        return 
 
     def get_actions(
         self,
@@ -277,3 +346,161 @@ class MultiAgentTransformer(nn.Module):
             key=key,
         )
         return output_action, output_action_log, value
+
+    def get_representations(
+        self,
+        observation: MavaObservation,  # (B, N, ...)
+        next_observation: MavaObservation,  # (B, N, ...)
+        action: chex.Array,  # (B, N, A)
+    ) -> Tuple[chex.Array, chex.Array]:
+        """Compute BYOL representations for current and next observations."""
+
+        # Get current state representation
+        _, obs_rep = self.encoder(observation.agents_view)
+
+        # Calculate predicted next state representation
+        next_obs_rep = self.predictor(self.projector(self.dynamic_model(action, obs_rep)))
+
+        # Calculate target network's next state representation
+        _, target_next_obs_rep = jax.lax.stop_gradient(
+            self.target_encoder(next_observation.agents_view)
+        )
+        target_next_obs_rep = jax.lax.stop_gradient(self.target_projector(target_next_obs_rep))
+        return obs_rep, next_obs_rep, target_next_obs_rep
+
+    def get_scores(
+        self,
+        obs_rep: chex.Array,
+        action: chex.Array,
+        next_obs_rep: chex.Array,
+        target_next_obs_rep: chex.Array,
+        rng_key: chex.PRNGKey,
+    ) -> chex.Array:
+        """Calculate intrinsic reward loss using discriminator."""
+        batch_size = obs_rep.shape[0]
+        # random select half of the batch to generate fake samples
+        false_batch_idx = jax.random.choice(
+            rng_key, batch_size, shape=(batch_size // 2,), replace=False
+        )
+        # create target next_obs_rep, replace fake samples with target_next_obs_rep
+        z_next_target = next_obs_rep.at[false_batch_idx].set(target_next_obs_rep[false_batch_idx])
+        # create labels, fake samples are 0, real samples are 1
+        labels = jnp.ones((batch_size, self.n_agent), dtype=jnp.int32)
+        labels = labels.at[false_batch_idx].set(0)
+        # calculate logits using discriminator
+        logits = self.discriminator(obs_rep, action, z_next_target)
+        return logits, labels
+
+
+class DynamicModel(nn.Module):
+    action_dim: int
+    n_agent: int
+    net_config: MATNetworkConfig
+    action_space_type: str
+
+    def setup(self) -> None:
+        ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
+        use_bias = self.action_space_type == _CONTINUOUS
+        self.action_encoder = nn.Sequential(
+            [
+                nn.Dense(
+                    self.net_config.embed_dim,
+                    use_bias=use_bias,
+                    kernel_init=orthogonal(jnp.sqrt(2)),
+                ),
+                nn.gelu,
+                ln(),
+            ],
+        )
+        self.ln = ln()
+        # Create a projection layer to map concatenated 2D dimensions back to D dimensions
+        self.proj = nn.Dense(
+            self.net_config.embed_dim,
+            kernel_init=orthogonal(jnp.sqrt(2)),
+        )
+        # Create EncodeBlock to process projected representation
+        self.encode_block = EncodeBlock(
+            self.n_agent,
+            self.net_config,
+            masked=False,
+        )
+
+    def __call__(self, action: chex.Array, rep_enc: chex.Array) -> chex.Array:
+        # action shape: [B, N, A]
+        # rep_enc shape: [B, N, D]
+        # Process action
+        if self.action_space_type == _DISCRETE:
+            processed_action = jax.nn.one_hot(action, self.action_dim)
+        else:
+            processed_action = action
+        # embedding action
+        action_embeddings = self.action_encoder(processed_action)  # [B, N, D]
+        # Concatenate action embeddings and state representations along feature dimension
+        combined = jnp.concatenate([action_embeddings, rep_enc], axis=-1)  # [B, N, 2D]
+        # Apply layer normalization
+        normalized = self.ln(combined)
+        # Project 2D dimensions back to D dimensions
+        projected = self.proj(normalized)  # [B, N, D]
+        # Process through EncodeBlock
+        next_obs_rep = self.encode_block(projected)
+
+        return next_obs_rep
+
+
+class Discriminator(nn.Module):
+    action_dim: int
+    n_agent: int
+    net_config: MATNetworkConfig
+    action_space_type: str
+
+    def setup(self) -> None:
+        ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
+        use_bias = self.action_space_type == _CONTINUOUS
+        self.action_encoder = nn.Sequential(
+            [
+                nn.Dense(
+                    self.net_config.embed_dim,
+                    use_bias=use_bias,
+                    kernel_init=orthogonal(jnp.sqrt(2)),
+                ),
+                nn.gelu,
+                ln(),
+            ],
+        )
+        self.ln = ln()
+        # Create EncodeBlock to process representations
+        self.encode_block = EncodeBlock(
+            self.n_agent,
+            self.net_config,
+            masked=False,
+        )
+        self.classifier = nn.Sequential(
+            [
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.LayerNorm(),
+                nn.tanh,
+                nn.Dense(self.net_config.embed_dim, kernel_init=orthogonal(jnp.sqrt(2))),
+                nn.elu,
+                nn.Dense(2, kernel_init=orthogonal(0.01)),
+            ]
+        )
+
+    def __call__(
+        self, obs_rep: chex.Array, action: chex.Array, next_obs_rep: chex.Array
+    ) -> chex.Array:
+        # action shape: [B, N, A]
+        # obs_rep/next_obs_rep shape: [B, N, D]
+        # Process action
+        if self.action_space_type == _DISCRETE:
+            processed_action = jax.nn.one_hot(action, self.action_dim)
+        else:
+            processed_action = action
+        # embedding action
+        action_embeddings = self.action_encoder(processed_action)
+        # Concatenate along sequence dimension
+        x = jnp.concatenate([obs_rep, action_embeddings, next_obs_rep], axis=1)
+        # Process through EncodeBlock
+        x = self.encode_block(x)[:, : self.n_agent, :]
+        logits = self.classifier(x)
+
+        return logits

@@ -15,23 +15,45 @@
 from typing import Callable, Tuple
 
 import chex
+import optax
 from chex import Array, PRNGKey
+from flashbax.buffers.trajectory_buffer import TrajectoryBufferState
 from flax.core.frozen_dict import FrozenDict
 from jumanji.types import TimeStep
-from optax._src.base import OptState
-from typing_extensions import NamedTuple
+from typing_extensions import NamedTuple, TypeAlias
 
-from mava.types import MavaObservation, State
+from mava.types import Action, Done, MavaObservation, Observation, State, Value
+
+
+class PPOTransition(NamedTuple):
+    """Transition tuple for MAT."""
+
+    done: Done
+    action: Action
+    value: Value
+    reward: chex.Array
+    log_prob: chex.Array
+    obs: Observation
+    next_obs: Observation
+
+class OffPolicyTransition(NamedTuple):
+    """Transition tuple for MAT."""
+
+    action: Action
+    obs: Observation
+    next_obs: Observation
+
+BufferState: TypeAlias = TrajectoryBufferState[OffPolicyTransition]
 
 
 class LearnerState(NamedTuple):
-    """State of the learner."""
+    """The state of the learner."""
 
     params: FrozenDict
-    opt_state: OptState
+    opt_states: Tuple[optax.OptState, optax.OptState]  # (mat_opt_state, byol_opt_state)
     key: chex.PRNGKey
     env_state: State
-    timestep: TimeStep
+    last_timestep: TimeStep
 
 
 class MATNetworkConfig(NamedTuple):
@@ -46,6 +68,15 @@ class MATNetworkConfig(NamedTuple):
 
 ActorApply = Callable[
     [FrozenDict, MavaObservation, PRNGKey],
-    Tuple[Array, Array, Array, Array],
+    Tuple[Array, Array, Array],
 ]
-LearnerApply = Callable[[FrozenDict, MavaObservation, Array, PRNGKey], Tuple[Array, Array, Array]]
+
+LearnerApply = Callable[
+    [FrozenDict, MavaObservation, MavaObservation, Array, PRNGKey],
+    Tuple[Array, Array, Array, Array, Array],
+]
+
+ByolApply = Callable[
+    [FrozenDict, MavaObservation, MavaObservation, Array],
+    Tuple[Array, Array],
+]

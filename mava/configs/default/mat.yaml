@@ -9,3 +9,9 @@ defaults:
 hydra:
   searchpath:
     - file://mava/configs
+
+system:
+  # BYOL parameters
+  use_byol: False  # Whether to use BYOL
+  target_network_ema: 0.99  # EMA update coefficient for target networks
+  byol_coef: 0.1  # BYOL loss coefficient
