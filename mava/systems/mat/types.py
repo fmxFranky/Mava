@@ -36,12 +36,16 @@ class PPOTransition(NamedTuple):
     obs: Observation
     next_obs: Observation
 
+
 class OffPolicyTransition(NamedTuple):
     """Transition tuple for MAT."""
 
     action: Action
     obs: Observation
+    reward: chex.Array
+    terminal: chex.Array
     next_obs: Observation
+
 
 BufferState: TypeAlias = TrajectoryBufferState[OffPolicyTransition]
 
@@ -54,6 +58,7 @@ class LearnerState(NamedTuple):
     key: chex.PRNGKey
     env_state: State
     last_timestep: TimeStep
+    buffer_state: BufferState  # Add buffer state to learner state
 
 
 class MATNetworkConfig(NamedTuple):

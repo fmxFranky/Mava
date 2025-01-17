@@ -330,7 +330,7 @@ class MultiAgentTransformer(nn.Module):
             obs_rep, next_obs_rep, target_next_obs_rep = self.get_representations(
                 observation, next_observation, action
             )
-        return 
+        return
 
     def get_actions(
         self,
@@ -367,6 +367,88 @@ class MultiAgentTransformer(nn.Module):
         )
         target_next_obs_rep = jax.lax.stop_gradient(self.target_projector(target_next_obs_rep))
         return obs_rep, next_obs_rep, target_next_obs_rep
+
+    def get_forward_representations(
+        self,
+        seq_observation: MavaObservation,  # (B, K+1, N, ...)  # sequence of observations
+        seq_action: chex.Array,  # (B, K, N, A)  # sequence of actions
+    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
+        """Compute representations for current and K-step future observations.
+
+        Following SPR and PlayVirtual paper:
+        1. Get current state representation from encoder
+        2. Use dynamics model to predict next K steps iteratively
+        3. Get target representations from target encoder for supervision
+
+        Args:
+            seq_observation: Sequence of observations with shape (B, K+1, N, ...)
+            seq_action: Sequence of actions with shape (B, K, N, A)
+
+        Returns:
+            obs_rep: Current observation representation
+            pred_obs_reps: Predicted future observation representations for K steps
+            target_obs_reps: Target observation representations from target encoder
+        """
+        # Get current state representation from first observation
+        _, obs_rep = self.encoder(seq_observation.agents_view[:, 0])  # (B, N, E)
+
+        # Transpose actions to put time dimension first
+        # From (B, K, N, A) to (K, B, N, A)
+        if self.action_space_type == _DISCRETE:
+            seq_action_t = jnp.transpose(seq_action[:, :-1], (1, 0, 2))
+        else:
+            seq_action_t = jnp.transpose(seq_action[:, :-1], (1, 0, 2, 3))
+
+        # Define scan function for K-step prediction
+        def _prediction_step(
+            prev_rep: chex.Array, action: chex.Array
+        ) -> Tuple[chex.Array, chex.Array]:
+            """Single step prediction using dynamics model.
+
+            Args:
+                prev_rep: Previous step's representation (output from last DM call), shape (B, N, E)
+                action: Current step's action, shape (B, N, A)
+
+            Returns:
+                (next_rep, next_rep): (carry for next step, output for current step)
+            """
+            next_rep = self.dynamic_model(action, prev_rep)  # use previous rep to predict next
+            return next_rep, next_rep  # carry forward next_rep as prev_rep for next step
+
+        # Predict next K steps using scan
+        # At each step k:
+        # - prev_rep is the representation from step k-1 (or obs_rep for k=0)
+        # - action is seq_action_t[k], shape (B, N, A)
+        # - output next_rep will be used as prev_rep for step k+1
+        _, pred_obs_reps = jax.lax.scan(
+            _prediction_step,
+            obs_rep,  # initial prev_rep (B, N, E)
+            seq_action_t,  # actions sequence (K, B, N, A)
+        )  # pred_obs_reps shape: (K, B, N, E)
+
+        # Transpose predictions to match desired shape (B, K, N, E)
+        pred_obs_reps = jnp.transpose(pred_obs_reps, (1, 0, 2, 3))
+
+        # Get target representations using target encoder
+        # Process each future observation through target encoder
+        _, target_obs_reps = jax.vmap(lambda x: self.target_encoder(x), in_axes=1, out_axes=1)(
+            seq_observation.agents_view[:, 1:]
+        )  # (B, K, N, E)
+
+        # Stop gradient for target representations
+        target_obs_reps = jax.lax.stop_gradient(target_obs_reps)
+
+        # Project predictions and targets to BYOL space
+        pred_obs_reps = jax.vmap(
+            lambda x: self.predictor(self.projector(x)), in_axes=1, out_axes=1
+        )(pred_obs_reps)  # (B, K, N, E)
+
+        target_obs_reps = jax.vmap(lambda x: self.target_projector(x), in_axes=1, out_axes=1)(
+            target_obs_reps
+        )  # (B, K, N, E)
+        target_obs_reps = jax.lax.stop_gradient(target_obs_reps)
+
+        return obs_rep, pred_obs_reps, target_obs_reps
 
     def get_scores(
         self,

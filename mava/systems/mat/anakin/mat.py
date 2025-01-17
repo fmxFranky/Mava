@@ -18,12 +18,14 @@ from functools import partial
 from typing import Any, Dict, Tuple
 
 import chex
+import flashbax as fbx
 import flax
 import hydra
 import jax
 import jax.numpy as jnp
 import optax
 from colorama import Fore, Style
+from flashbax.buffers.trajectory_buffer import TrajectoryBuffer, TrajectoryBufferSample
 from flax.core.frozen_dict import FrozenDict
 from jax import tree
 from omegaconf import DictConfig, OmegaConf
@@ -31,7 +33,15 @@ from rich.pretty import pprint
 
 from mava.evaluator import ActorState, get_eval_fn
 from mava.networks.mat_network import MultiAgentTransformer
-from mava.systems.mat.types import ActorApply, ByolApply, LearnerApply, LearnerState, PPOTransition
+from mava.systems.mat.types import (
+    ActorApply,
+    BufferState,
+    ByolApply,
+    LearnerApply,
+    LearnerState,
+    OffPolicyTransition,
+    PPOTransition,
+)
 from mava.types import (
     ExperimentOutput,
     LearnerFn,
@@ -53,6 +63,7 @@ def get_learner_fn(
     env: MarlEnv,
     apply_fns: Tuple[ActorApply, LearnerApply, ByolApply],
     update_fns: Tuple[optax.TransformUpdateFn, optax.TransformUpdateFn],
+    rb: TrajectoryBuffer,
     config: DictConfig,
 ) -> LearnerFn[LearnerState]:
     """Get the learner function."""
@@ -72,10 +83,11 @@ def get_learner_fn(
         Args:
             learner_state (NamedTuple):
                 - params: The current model parameters.
-                - opt_states: The current optimizer states (mat_opt_state, byol_opt_state).
+                - opt_state: The optimizer state
                 - key: The random number generator state.
                 - env_state: The environment state.
                 - last_timestep: The last timestep in the current trajectory.
+                - buffer_state: The replay buffer state.
             _ (Any): The current metrics info.
         """
 
@@ -83,7 +95,7 @@ def get_learner_fn(
             learner_state: LearnerState, _: Any
         ) -> Tuple[LearnerState, Tuple[PPOTransition, Metrics]]:
             """Step the environment."""
-            params, opt_state, key, env_state, last_timestep = learner_state
+            params, opt_state, key, env_state, last_timestep, buffer_state = learner_state
 
             # Select action
             key, policy_key = jax.random.split(key)
@@ -96,6 +108,21 @@ def get_learner_fn(
             env_state, timestep = jax.vmap(env.step, in_axes=(0, 0))(env_state, action)
 
             done = timestep.last().repeat(env.num_agents).reshape(config.arch.num_envs, -1)
+
+            # Create and store off-policy transition
+            off_policy_transition = OffPolicyTransition(
+                action=action,
+                obs=last_timestep.observation,
+                reward=timestep.reward,
+                terminal=done,
+                next_obs=timestep.extras["real_next_obs"],
+            )
+            # Add dummy time dim for buffer
+            off_policy_transition = tree.map(
+                lambda x: x[:, jnp.newaxis, ...], off_policy_transition
+            )
+            next_buffer_state = rb.add(buffer_state, off_policy_transition)
+
             transition = PPOTransition(
                 done,
                 action,
@@ -105,7 +132,9 @@ def get_learner_fn(
                 last_timestep.observation,
                 timestep.extras["real_next_obs"],
             )
-            learner_state = LearnerState(params, opt_state, key, env_state, timestep)
+            learner_state = LearnerState(
+                params, opt_state, key, env_state, timestep, next_buffer_state
+            )
             return learner_state, (transition, timestep.extras["episode_metrics"])
 
         # Step environment for rollout length
@@ -114,7 +143,7 @@ def get_learner_fn(
         )
 
         # Calculate advantage
-        params, opt_state, key, env_state, last_timestep = learner_state
+        params, opt_state, key, env_state, last_timestep, buffer_state = learner_state
 
         key, last_val_key = jax.random.split(key)
         _, _, last_val = actor_action_select_fn(  # type: ignore
@@ -211,31 +240,30 @@ def get_learner_fn(
 
                 def _byol_loss_fn(
                     params: FrozenDict,
-                    traj_batch: PPOTransition,
+                    buffer_state: BufferState,
+                    key: chex.PRNGKey,
                 ) -> Tuple:
-                    """Calculate the BYOL loss."""
+                    """Calculate the BYOL loss using sampled sequences from replay buffer."""
                     if not config.system.use_byol:
                         return 0.0, {}
 
-                    # Use dedicated BYOL computation function
-                    obs_rep, next_obs_rep, target_next_obs_rep = byol_apply_fn(
+                    # Sample sequence from replay buffer
+                    sampled_data = rb.sample(buffer_state, key).experience
+
+                    # Prepare sequence inputs for get_forward_representations
+                    seq_obs = sampled_data.obs  # (B, T, N, ...)
+                    seq_action = sampled_data.action  # (B, T-1, N, A)
+
+                    # Get representations using forward prediction
+                    obs_rep, pred_obs_reps, target_obs_reps = byol_apply_fn(
                         params,
-                        traj_batch.obs,
-                        traj_batch.next_obs,
-                        traj_batch.action,
+                        seq_obs,
+                        seq_action,
                     )
 
-                    # Normalize representations
-                    next_obs_rep = next_obs_rep / jnp.linalg.norm(
-                        next_obs_rep, axis=-1, keepdims=True
-                    )
-                    target_next_obs_rep = target_next_obs_rep / jnp.linalg.norm(
-                        target_next_obs_rep, axis=-1, keepdims=True
-                    )
-
-                    # Calculate MSE loss
+                    # Calculate MSE loss between predicted and target representations
                     byol_loss = jnp.mean(
-                        jnp.sum(jnp.square(next_obs_rep - target_next_obs_rep), axis=-1)
+                        jnp.sum(jnp.square(pred_obs_reps - target_obs_reps), axis=-1)
                     )
 
                     return byol_loss, {"byol_loss": byol_loss}
@@ -252,10 +280,12 @@ def get_learner_fn(
                 )
 
                 # Calculate BYOL loss
+                key, byol_key = jax.random.split(key)
                 byol_grad_fn = jax.value_and_grad(_byol_loss_fn, has_aux=True)
                 (byol_loss, byol_loss_info), byol_grads = byol_grad_fn(
                     params,
-                    traj_batch,
+                    buffer_state,
+                    byol_key,
                 )
 
                 # Mean over devices and batch
@@ -357,7 +387,7 @@ def get_learner_fn(
         )
 
         params, opt_state, traj_batch, advantages, targets, key = update_state
-        learner_state = LearnerState(params, opt_state, key, env_state, last_timestep)
+        learner_state = LearnerState(params, opt_state, key, env_state, last_timestep, buffer_state)
 
         return learner_state, (episode_metrics, loss_info)
 
@@ -405,8 +435,8 @@ def learner_setup(
     key, actor_net_key = keys
 
     # Initialise observation: Obs for all agents.
-    init_x = env.observation_spec.generate_value()
-    init_x = tree.map(lambda x: x[None, ...], init_x)
+    init_obs = env.observation_spec.generate_value()
+    init_x = tree.map(lambda x: x[None, ...], init_obs)
 
     _, action_space_type = get_action_head(env.action_spec)
 
@@ -434,7 +464,7 @@ def learner_setup(
     )
 
     # BYOL optimizer (for encoder, dynamic_model, projector, predictor)
-    byol_lr = make_learning_rate(config.system.actor_lr, config)  # Use same learning rate
+    byol_lr = make_learning_rate(config.system.fdm_lr, config)  # Use same learning rate
     byol_optim = optax.chain(
         optax.clip_by_global_norm(config.system.max_grad_norm),
         optax.adam(byol_lr, eps=1e-5),
@@ -467,15 +497,35 @@ def learner_setup(
     mat_opt_state = mat_optim.init(params)
     byol_opt_state = byol_optim.init(params)
 
+    # Initialize replay buffer
+    rb = fbx.make_trajectory_buffer(
+        sample_sequence_length=config.system.fdm_seq_len,
+        period=config.system.fdm_period,  # sample any unique trajectory
+        add_batch_size=config.arch.num_envs,
+        sample_batch_size=config.system.fdm_batch_size,
+        max_length_time_axis=config.system.fdm_max_length,
+        min_length_time_axis=config.system.fdm_min_length,
+    )
+
+    # Initialize buffer state with dummy transition
+    init_transition = OffPolicyTransition(
+        action=init_action[0],
+        obs=init_obs,
+        reward=jnp.zeros((env.num_agents,), dtype=float),
+        terminal=jnp.zeros((env.num_agents,), dtype=bool),
+        next_obs=init_obs,
+    )
+    buffer_state = rb.init(init_transition)
+
     # Pack apply and update functions.
     apply_fns = (
         partial(actor_network.apply, method="get_actions"),  # action selection
         actor_network.apply,  # policy and value computation
-        partial(actor_network.apply, method="get_representations"),  # BYOL computation
+        partial(actor_network.apply, method="get_forward_representations"),  # BYOL computation
     )
 
     # Get batched iterated update and replicate it to pmap it over cores.
-    learn = get_learner_fn(env, apply_fns, (mat_optim.update, byol_optim.update), config)
+    learn = get_learner_fn(env, apply_fns, (mat_optim.update, byol_optim.update), rb, config)
     learn = jax.pmap(learn, axis_name="device")
 
     # Initialise environment states and timesteps: across devices and batches.
@@ -511,11 +561,18 @@ def learner_setup(
     broadcast = lambda x: jnp.broadcast_to(x, (config.system.update_batch_size, *x.shape))
     replicate_learner = tree.map(broadcast, replicate_learner)
 
+    # Duplicate buffer state for update_batch_size
+    buffer_state = tree.map(broadcast, buffer_state)
+
     # Duplicate learner across devices.
     replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=jax.devices())
+    buffer_state = flax.jax_utils.replicate(buffer_state, devices=jax.devices())
+
     # Initialise learner state.
     params, opt_states, step_keys = replicate_learner
-    init_learner_state = LearnerState(params, opt_states, step_keys, env_states, timesteps)
+    init_learner_state = LearnerState(
+        params, opt_states, step_keys, env_states, timesteps, buffer_state
+    )
 
     return learn, actor_network, init_learner_state
 
