@@ -17,6 +17,7 @@ from typing import Tuple
 import chex
 import jax
 import jax.numpy as jnp
+import optax
 from flax import linen as nn
 from flax.linen.initializers import orthogonal
 
@@ -213,7 +214,7 @@ class MultiAgentTransformer(nn.Module):
     net_config: MATNetworkConfig
     action_space_type: str = _DISCRETE
     use_byol: bool = False
-
+    aux_pred_mode: str = "forward"
     # General shape names:
     # B: batch size
     # N: number of agents
@@ -237,15 +238,20 @@ class MultiAgentTransformer(nn.Module):
             self.action_space_type,
             self.net_config,
         )
-        self.dynamic_model = DynamicModel(
-            self.action_dim,
-            self.n_agent,
-            self.net_config,
-            self.action_space_type,
-        )
-
         # Initialize BYOL related networks only when use_byol is True
         if self.use_byol:
+            self.dynamic_model = DynamicModel(
+                self.action_dim,
+                self.n_agent,
+                self.net_config,
+                self.action_space_type,
+            )
+            self.backward_dynamic_model = BackwardDynamicModel(
+                self.action_dim,
+                self.n_agent,
+                self.net_config,
+                self.action_space_type,
+            )
             # BYOL projection head
             self.projector = nn.Sequential(
                 [
@@ -311,7 +317,6 @@ class MultiAgentTransformer(nn.Module):
     def init_params(
         self,
         observation: MavaObservation,  # (B, N, ...)
-        next_observation: MavaObservation,  # (B, N, ...)
         action: chex.Array,  # (B, N, A)
         key: chex.PRNGKey,
     ) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array, chex.Array]:
@@ -327,9 +332,17 @@ class MultiAgentTransformer(nn.Module):
         )
         # Calculate BYOL representations
         if self.use_byol:
-            obs_rep, next_obs_rep, target_next_obs_rep = self.get_representations(
-                observation, next_observation, action
-            )
+            if self.aux_pred_mode == "forward":
+                dm_rep = self.dynamic_model(action, obs_rep)
+            elif self.aux_pred_mode == "backward":
+                dm_rep = self.backward_dynamic_model(action, obs_rep)
+            else:
+                dm_rep = self.dynamic_model(action, obs_rep)
+                dm_rep = self.backward_dynamic_model(action, dm_rep)
+            dm_rep = self.projector(dm_rep)
+            dm_rep = self.predictor(dm_rep)
+            _, target_dm_rep = self.target_encoder(observation.agents_view)
+            target_dm_rep = self.target_projector(target_dm_rep)
         return
 
     def get_actions(
@@ -346,27 +359,6 @@ class MultiAgentTransformer(nn.Module):
             key=key,
         )
         return output_action, output_action_log, value
-
-    def get_representations(
-        self,
-        observation: MavaObservation,  # (B, N, ...)
-        next_observation: MavaObservation,  # (B, N, ...)
-        action: chex.Array,  # (B, N, A)
-    ) -> Tuple[chex.Array, chex.Array]:
-        """Compute BYOL representations for current and next observations."""
-
-        # Get current state representation
-        _, obs_rep = self.encoder(observation.agents_view)
-
-        # Calculate predicted next state representation
-        next_obs_rep = self.predictor(self.projector(self.dynamic_model(action, obs_rep)))
-
-        # Calculate target network's next state representation
-        _, target_next_obs_rep = jax.lax.stop_gradient(
-            self.target_encoder(next_observation.agents_view)
-        )
-        target_next_obs_rep = jax.lax.stop_gradient(self.target_projector(target_next_obs_rep))
-        return obs_rep, next_obs_rep, target_next_obs_rep
 
     def get_forward_representations(
         self,
@@ -385,7 +377,6 @@ class MultiAgentTransformer(nn.Module):
             seq_action: Sequence of actions with shape (B, K, N, A)
 
         Returns:
-            obs_rep: Current observation representation
             pred_obs_reps: Predicted future observation representations for K steps
             target_obs_reps: Target observation representations from target encoder
         """
@@ -448,7 +439,244 @@ class MultiAgentTransformer(nn.Module):
         )  # (B, K, N, E)
         target_obs_reps = jax.lax.stop_gradient(target_obs_reps)
 
-        return obs_rep, pred_obs_reps, target_obs_reps
+        return pred_obs_reps, target_obs_reps
+
+    def get_backward_representations(
+        self,
+        seq_observation: MavaObservation,  # (B, K+1, N, ...)  # sequence of observations
+        seq_action: chex.Array,  # (B, K, N, A)  # sequence of actions
+    ) -> Tuple[chex.Array, chex.Array, chex.Array]:
+        """Compute representations for K-step and previous observations.
+
+        Following SPR and PlayVirtual paper:
+        1. Get K-step state representation from encoder
+        2. Use backward dynamics model to predict previous K steps iteratively
+        3. Get target representations from target encoder for supervision
+
+        Args:
+            seq_observation: Sequence of observations with shape (B, K+1, N, ...)
+            seq_action: Sequence of actions with shape (B, K, N, A)
+
+        Returns:
+            obs_rep_k: K-step observation representation
+            pred_obs_reps: Predicted previous observation representations for K steps
+            target_obs_reps: Target observation representations from target encoder
+        """
+        # Get K-step state representation from last observation
+        _, obs_rep_k = self.encoder(seq_observation.agents_view[:, -1])  # (B, N, E)
+
+        # Transpose actions to put time dimension first and reverse the sequence
+        # From (B, K, N, A) to (K, B, N, A)
+        if self.action_space_type == _DISCRETE:
+            seq_action_t = jnp.transpose(seq_action[:, :-1], (1, 0, 2))
+        else:
+            seq_action_t = jnp.transpose(seq_action[:, :-1], (1, 0, 2, 3))
+        # Reverse the sequence to predict backwards
+        seq_action_t = jnp.flip(seq_action_t, axis=0)
+
+        # Define scan function for K-step backward prediction
+        def _backward_prediction_step(
+            prev_rep: chex.Array, action: chex.Array
+        ) -> Tuple[chex.Array, chex.Array]:
+            """Single step backward prediction using dynamics model.
+
+            Args:
+                prev_rep: Previous step's representation (output from last DM call), shape (B, N, E)
+                action: Current step's action, shape (B, N, A)
+
+            Returns:
+                (prev_rep, prev_rep): (carry for next step, output for current step)
+            """
+            prev_rep = self.backward_dynamic_model(
+                action, prev_rep
+            )  # use current rep to predict previous
+            return prev_rep, prev_rep  # carry forward prev_rep for next step
+
+        # Predict previous K steps using scan
+        # At each step k:
+        # - prev_rep is the representation from step k+1 (or obs_rep_k for k=K)
+        # - action is seq_action_t[k], shape (B, N, A)
+        # - output prev_rep will be used as prev_rep for step k-1
+        _, pred_obs_reps = jax.lax.scan(
+            _backward_prediction_step,
+            obs_rep_k,  # initial prev_rep (B, N, E)
+            seq_action_t,  # actions sequence (K, B, N, A)
+        )  # pred_obs_reps shape: (K, B, N, E)
+
+        # Transpose predictions to match desired shape (B, K, N, E)
+        pred_obs_reps = jnp.transpose(pred_obs_reps, (1, 0, 2, 3))
+        # Flip back the sequence to match the original order
+        pred_obs_reps = jnp.flip(pred_obs_reps, axis=1)
+
+        # Get target representations using target encoder
+        # Process each previous observation through target encoder
+        _, target_obs_reps = jax.vmap(lambda x: self.target_encoder(x), in_axes=1, out_axes=1)(
+            seq_observation.agents_view[:, :-1]
+        )  # (B, K, N, E)
+
+        # Stop gradient for target representations
+        target_obs_reps = jax.lax.stop_gradient(target_obs_reps)
+
+        # Project predictions and targets to BYOL space
+        pred_obs_reps = jax.vmap(
+            lambda x: self.predictor(self.projector(x)), in_axes=1, out_axes=1
+        )(pred_obs_reps)  # (B, K, N, E)
+
+        target_obs_reps = jax.vmap(lambda x: self.target_projector(x), in_axes=1, out_axes=1)(
+            target_obs_reps
+        )  # (B, K, N, E)
+        target_obs_reps = jax.lax.stop_gradient(target_obs_reps)
+
+        return pred_obs_reps, target_obs_reps
+
+    def get_cycle_representations(
+        self,
+        seq_observation: MavaObservation,  # (B, K+1, N, ...)  # sequence of observations
+        seq_action: chex.Array,  # (B, K, N, A)  # sequence of actions
+    ) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array, chex.Array, chex.Array]:
+        """Compute both forward and backward representations in a cycle.
+
+        The process follows:
+        1. Forward phase:
+           - Get current state representation from encoder
+           - Use dynamics model to predict next K steps iteratively
+           - Get target representations from target encoder
+        2. Backward phase:
+           - Use the last predicted representation from forward phase
+           - Use backward dynamics model to predict previous K steps iteratively
+           - Get target representations from target encoder
+
+        Args:
+            seq_observation: Sequence of observations with shape (B, K+1, N, ...)
+            seq_action: Sequence of actions with shape (B, K, N, A)
+
+        Returns:
+            forward_pred_obs_reps: Forward predicted observation representations for K steps
+            forward_target_obs_reps: Forward target observation representations
+            backward_pred_obs_reps: Backward predicted observation representations for K steps
+            backward_target_obs_reps: Backward target observation representations
+        """
+        # Forward phase
+        forward_pred_obs_reps, forward_target_obs_reps = self.get_forward_representations(
+            seq_observation, seq_action
+        )
+
+        # Get the last predicted representation from forward phase
+        # This will be used as the starting point for backward prediction
+        obs_rep_k = forward_pred_obs_reps[:, -1]  # (B, N, E)
+
+        # Transpose actions to put time dimension first and reverse the sequence
+        # From (B, K, N, A) to (K, B, N, A)
+        if self.action_space_type == _DISCRETE:
+            seq_action_t = jnp.transpose(seq_action[:, :-1], (1, 0, 2))
+        else:
+            seq_action_t = jnp.transpose(seq_action[:, :-1], (1, 0, 2, 3))
+        # Reverse the sequence to predict backwards
+        seq_action_t = jnp.flip(seq_action_t, axis=0)
+
+        # Define scan function for K-step backward prediction
+        def _backward_prediction_step(
+            prev_rep: chex.Array, action: chex.Array
+        ) -> Tuple[chex.Array, chex.Array]:
+            """Single step backward prediction using dynamics model.
+
+            Args:
+                prev_rep: Previous step's representation (output from last DM call), shape (B, N, E)
+                action: Current step's action, shape (B, N, A)
+
+            Returns:
+                (prev_rep, prev_rep): (carry for next step, output for current step)
+            """
+            prev_rep = self.backward_dynamic_model(
+                action, prev_rep
+            )  # use current rep to predict previous
+            return prev_rep, prev_rep  # carry forward prev_rep for next step
+
+        # Predict previous K steps using scan
+        # At each step k:
+        # - prev_rep is the representation from step k+1 (or obs_rep_k for k=K)
+        # - action is seq_action_t[k], shape (B, N, A)
+        # - output prev_rep will be used as prev_rep for step k-1
+        _, backward_pred_obs_reps = jax.lax.scan(
+            _backward_prediction_step,
+            obs_rep_k,  # initial prev_rep (B, N, E)
+            seq_action_t,  # actions sequence (K, B, N, A)
+        )  # backward_pred_obs_reps shape: (K, B, N, E)
+
+        # Transpose predictions to match desired shape (B, K, N, E)
+        backward_pred_obs_reps = jnp.transpose(backward_pred_obs_reps, (1, 0, 2, 3))
+        # Flip back the sequence to match the original order
+        backward_pred_obs_reps = jnp.flip(backward_pred_obs_reps, axis=1)
+
+        # Get target representations using target encoder
+        # Process each previous observation through target encoder
+        _, backward_target_obs_reps = jax.vmap(
+            lambda x: self.target_encoder(x), in_axes=1, out_axes=1
+        )(seq_observation.agents_view[:, :-1])  # (B, K, N, E)
+
+        # Stop gradient for target representations
+        backward_target_obs_reps = jax.lax.stop_gradient(backward_target_obs_reps)
+
+        # Project predictions and targets to BYOL space
+        backward_pred_obs_reps = jax.vmap(
+            lambda x: self.predictor(self.projector(x)), in_axes=1, out_axes=1
+        )(backward_pred_obs_reps)  # (B, K, N, E)
+
+        backward_target_obs_reps = jax.vmap(
+            lambda x: self.target_projector(x), in_axes=1, out_axes=1
+        )(backward_target_obs_reps)  # (B, K, N, E)
+        backward_target_obs_reps = jax.lax.stop_gradient(backward_target_obs_reps)
+
+        return (
+            forward_pred_obs_reps,
+            forward_target_obs_reps,
+            backward_pred_obs_reps,
+            backward_target_obs_reps,
+        )
+
+    def get_cycleward_representations(
+        self,
+        seq_observation: MavaObservation,  # (B, K+1, N, ...)  # sequence of observations
+        seq_action: chex.Array,  # (B, K, N, A)  # sequence of actions
+    ) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array, chex.Array, chex.Array]:
+        """Compute both forward and backward representations using their respective functions.
+
+        The process follows:
+        1. Forward phase (using get_forward_representations):
+           - Get current state representation from encoder
+           - Use dynamics model to predict next K steps iteratively
+           - Get target representations from target encoder
+        2. Backward phase (using get_backward_representations):
+           - Get K-step state representation from encoder
+           - Use backward dynamics model to predict previous K steps iteratively
+           - Get target representations from target encoder
+
+        Args:
+            seq_observation: Sequence of observations with shape (B, K+1, N, ...)
+            seq_action: Sequence of actions with shape (B, K, N, A)
+
+        Returns:
+            forward_pred_obs_reps: Forward predicted observation representations for K steps
+            forward_target_obs_reps: Forward target observation representations
+            backward_pred_obs_reps: Backward predicted observation representations for K steps
+            backward_target_obs_reps: Backward target observation representations
+        """
+        # Forward phase
+        forward_pred_obs_reps, forward_target_obs_reps = self.get_forward_representations(
+            seq_observation, seq_action
+        )
+
+        # Backward phase
+        backward_pred_obs_reps, backward_target_obs_reps = self.get_backward_representations(
+            seq_observation, seq_action
+        )
+
+        return (
+            forward_pred_obs_reps,
+            forward_target_obs_reps,
+            backward_pred_obs_reps,
+            backward_target_obs_reps,
+        )
 
     def get_scores(
         self,
@@ -527,6 +755,61 @@ class DynamicModel(nn.Module):
         next_obs_rep = self.encode_block(projected)
 
         return next_obs_rep
+
+
+class BackwardDynamicModel(nn.Module):
+    action_dim: int
+    n_agent: int
+    net_config: MATNetworkConfig
+    action_space_type: str
+
+    def setup(self) -> None:
+        ln = nn.RMSNorm if self.net_config.use_rmsnorm else nn.LayerNorm
+        use_bias = self.action_space_type == _CONTINUOUS
+        self.action_encoder = nn.Sequential(
+            [
+                nn.Dense(
+                    self.net_config.embed_dim,
+                    use_bias=use_bias,
+                    kernel_init=orthogonal(jnp.sqrt(2)),
+                ),
+                nn.gelu,
+                ln(),
+            ],
+        )
+        self.ln = ln()
+        # Create a projection layer to map concatenated 2D dimensions back to D dimensions
+        self.proj = nn.Dense(
+            self.net_config.embed_dim,
+            kernel_init=orthogonal(jnp.sqrt(2)),
+        )
+        # Create EncodeBlock to process projected representation
+        self.encode_block = EncodeBlock(
+            self.n_agent,
+            self.net_config,
+            masked=False,
+        )
+
+    def __call__(self, action: chex.Array, rep_enc: chex.Array) -> chex.Array:
+        # action shape: [B, N, A]
+        # rep_enc shape: [B, N, D]
+        # Process action
+        if self.action_space_type == _DISCRETE:
+            processed_action = jax.nn.one_hot(action, self.action_dim)
+        else:
+            processed_action = action
+        # embedding action
+        action_embeddings = self.action_encoder(processed_action)  # [B, N, D]
+        # Concatenate action embeddings and state representations along feature dimension
+        combined = jnp.concatenate([action_embeddings, rep_enc], axis=-1)  # [B, N, 2D]
+        # Apply layer normalization
+        normalized = self.ln(combined)
+        # Project 2D dimensions back to D dimensions
+        projected = self.proj(normalized)  # [B, N, D]
+        # Process through EncodeBlock
+        prev_obs_rep = self.encode_block(projected)
+
+        return prev_obs_rep
 
 
 class Discriminator(nn.Module):

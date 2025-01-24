@@ -13,11 +13,14 @@ hydra:
 system:
   # BYOL parameters
   use_byol: False  # Whether to use BYOL
-  target_network_ema: 0.99  # EMA update coefficient for target networks
+  target_network_ema: 1  # EMA update coefficient for target networks
   byol_coef: 1  # BYOL loss coefficient
-  fdm_seq_len: 2
-  fdm_period: 1
-  fdm_batch_size: 512
-  fdm_max_length: 10000
-  fdm_min_length: 128
-  fdm_lr: 1e-5
+  aux_pred_mode: "cycle" # ["forward", "backward", "cycle", "cycleward"]
+  aux_loss_mode: "mse" # ["mse", "huber"]
+  aux_agg_op: "mean" # ["mean", "sum"]
+  rb_sample_seq_len: 5
+  rb_period: 1
+  aux_batch_size: 2048
+  rb_store_max_length: 4096
+  rb_store_min_length: 128
+  aux_lr: 5e-4

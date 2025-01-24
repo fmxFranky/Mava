@@ -249,24 +249,80 @@ def get_learner_fn(
 
                     # Sample sequence from replay buffer
                     sampled_data = rb.sample(buffer_state, key).experience
+                    # Shuffle along the agent dimension as well
+                    key, agent_shuffle_key = jax.random.split(key)
+                    permutation = jax.random.permutation(
+                        agent_shuffle_key, config.system.num_agents
+                    )
+                    sampled_data = tree.map(
+                        lambda x: jnp.take(x, permutation, axis=2), sampled_data
+                    )
 
                     # Prepare sequence inputs for get_forward_representations
                     seq_obs = sampled_data.obs  # (B, T, N, ...)
                     seq_action = sampled_data.action  # (B, T-1, N, A)
 
-                    # Get representations using forward prediction
-                    obs_rep, pred_obs_reps, target_obs_reps = byol_apply_fn(
+                    reps_list = byol_apply_fn(
                         params,
                         seq_obs,
                         seq_action,
                     )
 
-                    # Calculate MSE loss between predicted and target representations
-                    byol_loss = jnp.mean(
-                        jnp.sum(jnp.square(pred_obs_reps - target_obs_reps), axis=-1)
-                    )
+                    def _rep_loss(
+                        pred_reps: chex.Array, target_reps: chex.Array, seq_done: chex.Array
+                    ) -> chex.Array:
+                        if config.system.aux_loss_mode == "mse":
+                            # Normalize representations along the D dimension
+                            pred_reps = pred_reps / jnp.linalg.norm(
+                                pred_reps, axis=-1, keepdims=True
+                            )  # (B, N, D)
+                            target_reps = target_reps / jnp.linalg.norm(
+                                target_reps, axis=-1, keepdims=True
+                            )  # (B, N, D)
+                            # Calculate MSE loss along the D dimension
+                            loss_per_agent = jnp.mean(
+                                jnp.square(pred_reps - target_reps), axis=-1
+                            )  # (B, N)
+                        elif config.system.aux_loss_mode == "huber":
+                            loss_per_agent = jnp.mean(
+                                optax.huber_loss(pred_reps, target_reps), axis=-1
+                            )
+                        else:
+                            raise ValueError(
+                                f"Invalid aux_loss_mode: {config.system.aux_loss_mode}"
+                            )
+                        # Aggregate loss across agents (N dimension) using mean or sum
+                        loss_per_batch = getattr(jnp, config.system.aux_agg_op)(loss_per_agent)
+                        seq_done = jnp.any(seq_done[:, :-1, 0], axis=-1)  # (B,)
+                        loss_per_batch = jnp.where(seq_done, 0.0, loss_per_batch)  # (B,)
+                        loss_per_batch = jnp.sum(loss_per_batch) / jnp.sum(1 - seq_done)
+                        return loss_per_batch
 
-                    return byol_loss, {"byol_loss": byol_loss}
+                    if config.system.aux_pred_mode in ["forward", "backward"]:
+                        pred_obs_reps, target_obs_reps = reps_list
+                        byol_loss = _rep_loss(pred_obs_reps, target_obs_reps, sampled_data.terminal)
+                        loss_info = {f"byol_{config.system.aux_pred_mode}_loss": byol_loss}
+                    else:
+                        (
+                            pred_fdm_obs_reps,
+                            target_fdm_obs_reps,
+                            pred_bdm_obs_reps,
+                            target_bdm_obs_reps,
+                        ) = reps_list
+                        byol_forward_loss = _rep_loss(
+                            pred_fdm_obs_reps, target_fdm_obs_reps, sampled_data.terminal
+                        )
+                        byol_backward_loss = _rep_loss(
+                            pred_bdm_obs_reps, target_bdm_obs_reps, sampled_data.terminal
+                        )
+                        byol_loss = (byol_forward_loss + byol_backward_loss) / 2
+                        loss_info = {
+                            "byol_loss": byol_loss,
+                            "byol_forward_loss": byol_forward_loss,
+                            "byol_backward_loss": byol_backward_loss,
+                        }
+
+                    return byol_loss, loss_info
 
                 # Calculate MAT loss
                 key, mat_key = jax.random.split(key)
@@ -454,6 +510,7 @@ def learner_setup(
         net_config=config.network,
         action_space_type=action_space_type,
         use_byol=config.system.use_byol,
+        aux_pred_mode=config.system.aux_pred_mode,
     )
 
     # MAT optimizer (for encoder and decoder)
@@ -464,7 +521,7 @@ def learner_setup(
     )
 
     # BYOL optimizer (for encoder, dynamic_model, projector, predictor)
-    byol_lr = make_learning_rate(config.system.fdm_lr, config)  # Use same learning rate
+    byol_lr = make_learning_rate(config.system.aux_lr, config)
     byol_optim = optax.chain(
         optax.clip_by_global_norm(config.system.max_grad_norm),
         optax.adam(byol_lr, eps=1e-5),
@@ -472,12 +529,11 @@ def learner_setup(
 
     # Initialise actor params and optimisers state.
     params = actor_network.init(
-        actor_net_key, init_x, init_x, init_action, jax.random.PRNGKey(0), method="init_params"
+        actor_net_key, init_x, init_action, jax.random.PRNGKey(0), method="init_params"
     )
     print(
         actor_network.tabulate(
             actor_net_key,
-            init_x,
             init_x,
             init_action,
             jax.random.PRNGKey(0),
@@ -492,6 +548,18 @@ def learner_setup(
         )
         params["params"]["target_encoder"] = copy.deepcopy(params["params"]["encoder"])
         params["params"]["target_projector"] = copy.deepcopy(params["params"]["projector"])
+        if config.system.aux_pred_mode == "forward":
+            assert "dynamic_model" in params["params"], (
+                "Forward BYOL requires dynamic_model in params"
+            )
+        elif config.system.aux_pred_mode == "backward":
+            assert "backward_dynamic_model" in params["params"], (
+                "Backward BYOL requires backward_dynamic_model in params"
+            )
+        else:
+            assert (
+                "dynamic_model" in params["params"] and "backward_dynamic_model" in params["params"]
+            ), "Cycle BYOL requires both dynamic_model and backward_dynamic_model in params"
 
     # Initialize states for both optimizers
     mat_opt_state = mat_optim.init(params)
@@ -499,12 +567,12 @@ def learner_setup(
 
     # Initialize replay buffer
     rb = fbx.make_trajectory_buffer(
-        sample_sequence_length=config.system.fdm_seq_len,
-        period=config.system.fdm_period,  # sample any unique trajectory
+        sample_sequence_length=config.system.rb_sample_seq_len + 1,
+        period=config.system.rb_period,  # sample any unique trajectory
         add_batch_size=config.arch.num_envs,
-        sample_batch_size=config.system.fdm_batch_size,
-        max_length_time_axis=config.system.fdm_max_length,
-        min_length_time_axis=config.system.fdm_min_length,
+        sample_batch_size=config.system.aux_batch_size,
+        max_length_time_axis=config.system.rb_store_max_length,
+        min_length_time_axis=config.system.rb_store_min_length,
     )
 
     # Initialize buffer state with dummy transition
@@ -521,7 +589,9 @@ def learner_setup(
     apply_fns = (
         partial(actor_network.apply, method="get_actions"),  # action selection
         actor_network.apply,  # policy and value computation
-        partial(actor_network.apply, method="get_forward_representations"),  # BYOL computation
+        partial(
+            actor_network.apply, method=f"get_{config.system.aux_pred_mode}_representations"
+        ),  # BYOL computation
     )
 
     # Get batched iterated update and replicate it to pmap it over cores.
