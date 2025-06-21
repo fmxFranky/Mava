@@ -1,11 +1,55 @@
-# Q Learning
+# Q-Learning Systems
 
-We provide two Q-Learning based systems that follow the independent learners and centralised training with decentralised execution paradigms:
+This directory contains implementations of Q-learning algorithms for multi-agent reinforcement learning.
 
-* [rec-IQL](../../systems/q_learning/anakin/rec_iql.py)
-* [rec-QMIX](../../systems/q_learning/anakin/rec_qmix.py)
+## Available Algorithms
 
-`rec-IQL` is a multi-agent version of DQN that uses double DQN and has a GRU memory module and `rec-QMIX` is an implementation of QMIX in JAX that uses monontic value function decomposition.
+### Recurrent Independent Q-Learning (IQL)
+- **File**: `anakin/rec_iql.py`
+- **Description**: Independent Q-learning with recurrent networks for partial observability
+
+### Recurrent QMIX
+- **File**: `anakin/rec_qmix.py` 
+- **Description**: QMIX algorithm with recurrent networks for value decomposition in cooperative settings
+
+#### Enhanced Trajectory Support (NEW)
+
+The recurrent QMIX implementation now supports enhanced trajectory inputs to the actor network:
+
+- **Individual Trajectory**: Historical observations and actions for the current agent
+  - Format: `observations: [B, K, *obs_dim]`, `actions: [B, K, *act_dim]`
+- **Joint Trajectory**: Historical observations and actions for all agents  
+  - Format: `observations: [B, N, K, *obs_dim]`, `actions: [B, N, K, *act_dim]`
+
+Where:
+- `B`: Batch size
+- `N`: Number of agents
+- `K`: Trajectory length (configurable via `system.traj_len`)
+
+**Configuration**:
+```yaml
+system:
+  traj_len: 10  # Length of historical trajectory buffer
+```
+
+**Current Status**: 
+- ✅ Trajectory data is properly constructed and passed to the network
+- ⚠️ TODO: The network currently receives but does not use the trajectory information
+- ⚠️ TODO: Training procedures also need trajectory integration
+
+**Usage**: The trajectories contain observations from timesteps `t-K:t` and actions from timesteps `t-K-1:t-1`, ensuring the last observation in the trajectory matches the current network input.
+
+## Configuration
+
+Each algorithm has its corresponding configuration file in `mava/configs/system/q_learning/`.
+
+## Key Features
+
+- **Recurrent Networks**: Handle partial observability through LSTM/GRU cells
+- **Replay Buffers**: Experience replay for sample efficiency  
+- **Target Networks**: Stabilized learning through periodic target updates
+- **Epsilon-Greedy Exploration**: Balanced exploration-exploitation
+- **Trajectory History**: Enhanced decision making through historical context (QMIX)
 
 ## Relevant papers:
 * [Playing Atari with Deep Reinforcement Learning](https://arxiv.org/pdf/1312.5602)

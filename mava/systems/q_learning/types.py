@@ -76,6 +76,19 @@ class QMIXParams(NamedTuple):
     mixer_target: FrozenVariableDict
 
 
+class TrajectoryState(NamedTuple):
+    """State to manage historical trajectories for each agent."""
+
+    # Historical observations buffer [B, N, K, *obs_dim]
+    obs_history: Array
+    # Historical actions buffer [B, N, K, *act_dim]
+    action_history: Array
+    # Current position in the circular buffer
+    buffer_idx: Array
+    # Whether the buffer is full (for proper trajectory construction)
+    buffer_full: Array
+
+
 QLearningParams = TypeVar("QLearningParams", QNetParams, QMIXParams)
 
 
@@ -98,6 +111,9 @@ class LearnerState(NamedTuple, Generic[QLearningParams]):
     buffer_state: TrajectoryBufferState
     params: QLearningParams
     key: PRNGKey
+
+    # Trajectory management
+    trajectory_state: TrajectoryState
 
 
 class TrainState(NamedTuple, Generic[QLearningParams]):

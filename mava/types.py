@@ -139,6 +139,28 @@ class ObservationGlobalState(NamedTuple):
     step_count: Optional[chex.Array] = None  # (num_agents, )
 
 
+class IndividualTrajectory(NamedTuple):
+    """Individual agent's historical trajectory.
+
+    observations: historical observations of the agent [B, K, *obs_dim]
+    actions: historical actions of the agent [B, K, *act_dim]
+    """
+
+    observations: chex.Array  # [B, K, *obs_dim]
+    actions: chex.Array  # [B, K, *act_dim]
+
+
+class JointTrajectory(NamedTuple):
+    """Joint historical trajectory of all agents.
+
+    observations: historical observations of all agents [B, N, K, *obs_dim]
+    actions: historical actions of all agents [B, N, K, *act_dim]
+    """
+
+    observations: chex.Array  # [B, N, K, *obs_dim]
+    actions: chex.Array  # [B, N, K, *act_dim]
+
+
 RNNObservation: TypeAlias = Tuple[Observation, Done]
 RNNGlobalObservation: TypeAlias = Tuple[ObservationGlobalState, Done]
 MavaObservation: TypeAlias = Union[Observation, ObservationGlobalState]

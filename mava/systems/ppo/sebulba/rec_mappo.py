@@ -660,9 +660,9 @@ def run_experiment(_config: DictConfig) -> float:
     if config.system.recurrent_chunk_size is None:
         config.system.recurrent_chunk_size = config.system.rollout_length
     else:
-        assert (
-            config.system.rollout_length % config.system.recurrent_chunk_size == 0
-        ), "Rollout length must be divisible by recurrent chunk size."
+        assert config.system.rollout_length % config.system.recurrent_chunk_size == 0, (
+            "Rollout length must be divisible by recurrent chunk size."
+        )
 
     # Setup learner.
     learn, apply_fns, learner_state, learner_sharding = learner_setup(key, config, learner_devices)

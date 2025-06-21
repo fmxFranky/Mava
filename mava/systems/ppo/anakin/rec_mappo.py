@@ -37,11 +37,15 @@ from mava.systems.ppo.types import (
     Params,
     RNNLearnerState,
     RNNPPOTransition,
+    TrajectoryState,
 )
 from mava.types import (
     ExperimentOutput,
+    IndividualTrajectory,
+    JointTrajectory,
     LearnerFn,
     MarlEnv,
+    MavaObservation,
     Metrics,
     RecActorApply,
     RecCriticApply,
@@ -55,6 +59,57 @@ from mava.utils.multistep import calculate_gae
 from mava.utils.network_utils import get_action_head
 from mava.utils.training import make_learning_rate
 from mava.wrappers.episode_metrics import get_final_step_metrics
+
+
+def update_trajectory_state(
+    trajectory_state: TrajectoryState,
+    current_obs: MavaObservation,
+    current_action: chex.Array,
+) -> TrajectoryState:
+    """Update trajectory state with new observation and action."""
+    # Shift history and add new data
+    new_obs_history = jnp.roll(trajectory_state.obs_history, -1, axis=2)
+    # Set the last position to the current observations
+    # current_obs is Observation or ObservationGlobalState, use .agents_view
+    new_obs_history = new_obs_history.at[:, :, -1].set(current_obs.agents_view)
+
+    new_action_history = jnp.roll(trajectory_state.action_history, -1, axis=2)
+    new_action_history = new_action_history.at[:, :, -1].set(current_action)
+
+    # Update buffer index (capped at traj_len)
+    new_buffer_idx = jnp.minimum(trajectory_state.buffer_idx + 1, new_obs_history.shape[2])
+    new_buffer_full = trajectory_state.buffer_full | (new_buffer_idx == new_obs_history.shape[2])
+
+    return TrajectoryState(
+        obs_history=new_obs_history,
+        action_history=new_action_history,
+        buffer_idx=new_buffer_idx,
+        buffer_full=new_buffer_full,
+    )
+
+
+def construct_trajectories(
+    trajectory_state: TrajectoryState, current_obs: MavaObservation, agent_idx: int = 0
+) -> Tuple[IndividualTrajectory, JointTrajectory]:
+    """Construct individual and joint trajectories from trajectory state. Returns the full
+    fixed-length histories (no dynamic slicing) to keep shapes static for JIT compatibility."""
+    # Directly use the fixed-size history tensors to avoid dynamic indexing inside JIT.
+    # Older (unfilled) slots simply contain zeros until the buffer is full.
+    obs_history = trajectory_state.obs_history  # [B, N, K, *obs_dim]
+    action_history = trajectory_state.action_history  # [B, N, K]
+
+    # Construct individual trajectory for specified agent
+    individual_traj = IndividualTrajectory(
+        observations=obs_history[:, agent_idx],  # [B, K, *obs_dim]
+        actions=action_history[:, agent_idx],  # [B, K]
+    )
+
+    # Construct joint trajectory for all agents
+    joint_traj = JointTrajectory(
+        observations=obs_history,  # [B, N, K, *obs_dim]
+        actions=action_history,  # [B, N, K]
+    )
+    return individual_traj, joint_traj
 
 
 def get_learner_fn(
@@ -101,6 +156,7 @@ def get_learner_fn(
                 last_timestep,
                 last_done,
                 last_hstates,
+                trajectory_state,
             ) = learner_state
 
             key, policy_key = jax.random.split(key)
@@ -109,12 +165,29 @@ def get_learner_fn(
             batched_observation = tree.map(lambda x: x[jnp.newaxis, :], last_timestep.observation)
             ac_in = (batched_observation, last_done[jnp.newaxis, :])
 
-            # Run the network.
+            # Construct trajectories for first agent (TODO: could be configurable)
+            individual_traj, joint_traj = construct_trajectories(
+                trajectory_state, last_timestep.observation, agent_idx=0
+            )
+
+            # Add batch dimension to trajectories
+            individual_traj = IndividualTrajectory(
+                observations=individual_traj.observations[jnp.newaxis, ...],
+                actions=individual_traj.actions[jnp.newaxis, ...],
+            )
+            joint_traj = JointTrajectory(
+                observations=joint_traj.observations[jnp.newaxis, ...],
+                actions=joint_traj.actions[jnp.newaxis, ...],
+            )
+
+            # Run the network with trajectory information
+            # TODO: Currently passing None for trajectory to maintain compatibility
+            # In future, pass individual_traj and joint_traj to networks
             policy_hidden_state, actor_policy = actor_apply_fn(
-                params.actor_params, last_hstates.policy_hidden_state, ac_in
+                params.actor_params, last_hstates.policy_hidden_state, ac_in, None, None
             )
             critic_hidden_state, value = critic_apply_fn(
-                params.critic_params, last_hstates.critic_hidden_state, ac_in
+                params.critic_params, last_hstates.critic_hidden_state, ac_in, None, None
             )
 
             # Sample action from the policy and squeeze out the batch dimension.
@@ -122,6 +195,11 @@ def get_learner_fn(
             log_prob = actor_policy.log_prob(action)
 
             action, log_prob, value = action.squeeze(0), log_prob.squeeze(0), value.squeeze(0)
+
+            # Update trajectory state with new observation and action
+            new_trajectory_state = update_trajectory_state(
+                trajectory_state, last_timestep.observation, action
+            )
 
             # Step the environment.
             env_state, timestep = jax.vmap(env.step, in_axes=(0, 0))(env_state, action)
@@ -138,7 +216,7 @@ def get_learner_fn(
                 last_hstates,
             )
             learner_state = RNNLearnerState(
-                params, opt_states, key, env_state, timestep, done, hstates
+                params, opt_states, key, env_state, timestep, done, hstates, new_trajectory_state
             )
             metrics = timestep.extras["episode_metrics"] | timestep.extras["env_metrics"]
             return learner_state, (transition, metrics)
@@ -149,14 +227,18 @@ def get_learner_fn(
         )
 
         # Calculate advantage
-        params, opt_states, key, env_state, last_timestep, last_done, hstates = learner_state
+        params, opt_states, key, env_state, last_timestep, last_done, hstates, trajectory_state = (
+            learner_state
+        )
 
         # Add a batch dimension to the observation.
         batched_last_observation = tree.map(lambda x: x[jnp.newaxis, :], last_timestep.observation)
         ac_in = (batched_last_observation, last_done[jnp.newaxis, :])
 
         # Run the network.
-        _, last_val = critic_apply_fn(params.critic_params, hstates.critic_hidden_state, ac_in)
+        _, last_val = critic_apply_fn(
+            params.critic_params, hstates.critic_hidden_state, ac_in, None, None
+        )
 
         # Squeeze out the batch dimension and mask out the value of terminal states.
         last_val = last_val.squeeze(0)
@@ -183,7 +265,11 @@ def get_learner_fn(
                     # Rerun network
                     obs_and_done = (traj_batch.obs, traj_batch.done)
                     _, actor_policy = actor_apply_fn(
-                        actor_params, traj_batch.hstates.policy_hidden_state[0], obs_and_done
+                        actor_params,
+                        traj_batch.hstates.policy_hidden_state[0],
+                        obs_and_done,
+                        None,
+                        None,
                     )
                     log_prob = actor_policy.log_prob(traj_batch.action)
 
@@ -217,7 +303,11 @@ def get_learner_fn(
                     # Rerun network
                     obs_and_done = (traj_batch.obs, traj_batch.done)
                     _, value = critic_apply_fn(
-                        critic_params, traj_batch.hstates.critic_hidden_state[0], obs_and_done
+                        critic_params,
+                        traj_batch.hstates.critic_hidden_state[0],
+                        obs_and_done,
+                        None,
+                        None,
                     )
 
                     # Clipped MSE loss
@@ -358,6 +448,7 @@ def get_learner_fn(
             last_timestep,
             last_done,
             hstates,
+            trajectory_state,
         )
         return learner_state, (episode_metrics, loss_info)
 
@@ -405,6 +496,9 @@ def learner_setup(
     num_agents = env.num_agents
     config.system.num_agents = num_agents
 
+    # Set trajectory length, default to 10 if not specified
+    traj_len = getattr(config.system, "traj_len", 10)
+
     # PRNG keys.
     key, actor_net_key, critic_net_key = keys
 
@@ -421,12 +515,14 @@ def learner_setup(
         post_torso=actor_post_torso,
         action_head=actor_action_head,
         hidden_state_dim=config.network.hidden_state_dim,
+        traj_len=traj_len,
     )
     critic_network = Critic(
         pre_torso=critic_pre_torso,
         post_torso=critic_post_torso,
         hidden_state_dim=config.network.hidden_state_dim,
         centralised_critic=True,
+        traj_len=traj_len,
     )
 
     actor_lr = make_learning_rate(config.system.actor_lr, config)
@@ -460,9 +556,11 @@ def learner_setup(
     )
 
     # initialise params and optimiser state.
-    actor_params = actor_network.init(actor_net_key, init_policy_hstate, init_obs_done)
+    actor_params = actor_network.init(actor_net_key, init_policy_hstate, init_obs_done, None, None)
     actor_opt_state = actor_optim.init(actor_params)
-    critic_params = critic_network.init(critic_net_key, init_critic_hstate, init_obs_done)
+    critic_params = critic_network.init(
+        critic_net_key, init_critic_hstate, init_obs_done, None, None
+    )
     critic_opt_state = critic_optim.init(critic_params)
 
     # Get network apply functions and optimiser updates.
@@ -510,19 +608,49 @@ def learner_setup(
         (config.arch.num_envs, num_agents),
         dtype=bool,
     )
+
+    # Initialize trajectory state
+    # Get observation dims from first timestep
+    sample_obs = timesteps.observation
+    if hasattr(sample_obs, "agents_view"):
+        obs_dims = sample_obs.agents_view.shape[1:]
+    else:
+        obs_dims = sample_obs.shape[1:]
+
+    # Infer action shape and dtype from action_spec
+    sample_action = env.action_spec.generate_value()  # shape: (num_agents, *act_dim)
+    action_shape = sample_action.shape[1:]
+    action_dtype = jnp.array(sample_action).dtype
+
+    # Initialize trajectory buffers with zeros
+    # obs_history: [num_envs, num_agents, traj_len, *obs_dims]
+    init_obs_history = jnp.zeros((config.arch.num_envs, num_agents, traj_len, *obs_dims))
+    # action_history: [num_envs, num_agents, traj_len, *action_shape]
+    init_action_history = jnp.zeros(
+        (config.arch.num_envs, num_agents, traj_len, *action_shape),
+        dtype=action_dtype,
+    )
+
+    trajectory_state = TrajectoryState(
+        obs_history=init_obs_history,
+        action_history=init_action_history,
+        buffer_idx=0,
+        buffer_full=False,
+    )
+
     key, step_keys = jax.random.split(key)
     opt_states = OptStates(actor_opt_state, critic_opt_state)
-    replicate_learner = (params, opt_states, hstates, step_keys, dones)
+    replicate_learner = (params, opt_states, hstates, step_keys, dones, trajectory_state)
 
     # Duplicate learner for update_batch_size.
-    broadcast = lambda x: jnp.broadcast_to(x, (config.system.update_batch_size, *x.shape))
+    broadcast = lambda x: jnp.broadcast_to(x, (config.system.update_batch_size, *jnp.shape(x)))
     replicate_learner = tree.map(broadcast, replicate_learner)
 
     # Duplicate learner across devices.
     replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=jax.devices())
 
     # Initialise learner state.
-    params, opt_states, hstates, step_keys, dones = replicate_learner
+    params, opt_states, hstates, step_keys, dones, trajectory_state = replicate_learner
     init_learner_state = RNNLearnerState(
         params=params,
         opt_states=opt_states,
@@ -531,6 +659,7 @@ def learner_setup(
         timestep=timesteps,
         dones=dones,
         hstates=hstates,
+        trajectory_state=trajectory_state,
     )
     return learn, actor_network, init_learner_state
 
@@ -546,13 +675,13 @@ def run_experiment(_config: DictConfig) -> float:
     if config.system.recurrent_chunk_size is None:
         config.system.recurrent_chunk_size = config.system.rollout_length
     else:
-        assert (
-            config.system.rollout_length % config.system.recurrent_chunk_size == 0
-        ), "Rollout length must be divisible by recurrent chunk size."
+        assert config.system.rollout_length % config.system.recurrent_chunk_size == 0, (
+            "Rollout length must be divisible by recurrent chunk size."
+        )
 
-        assert (
-            config.arch.num_envs % config.system.num_minibatches == 0
-        ), "Number of envs must be divisibile by number of minibatches."
+        assert config.arch.num_envs % config.system.num_minibatches == 0, (
+            "Number of envs must be divisibile by number of minibatches."
+        )
 
     # Create the enviroments for train and eval.
     env, eval_env = environments.make(config=config, add_global_state=True)
@@ -575,9 +704,9 @@ def run_experiment(_config: DictConfig) -> float:
 
     # Calculate total timesteps.
     config = check_total_timesteps(config)
-    assert (
-        config.system.num_updates > config.arch.num_evaluation
-    ), "Number of updates per evaluation must be less than total number of updates."
+    assert config.system.num_updates > config.arch.num_evaluation, (
+        "Number of updates per evaluation must be less than total number of updates."
+    )
 
     # Calculate number of updates per evaluation.
     config.system.num_updates_per_eval = config.system.num_updates // config.arch.num_evaluation

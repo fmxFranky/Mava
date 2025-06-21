@@ -43,6 +43,15 @@ class HiddenStates(NamedTuple):
     critic_hidden_state: HiddenState
 
 
+class TrajectoryState(NamedTuple):
+    """State for managing trajectory history."""
+
+    obs_history: chex.Array  # [B, N, K, *obs_dim] - trajectory of observations
+    action_history: chex.Array  # [B, N, K] - trajectory of actions
+    buffer_idx: int  # Current buffer index
+    buffer_full: bool  # Whether buffer has been filled at least once
+
+
 class LearnerState(NamedTuple):
     """State of the learner."""
 
@@ -74,6 +83,7 @@ class RNNLearnerState(NamedTuple):
     timestep: TimeStep
     dones: Done
     hstates: HiddenStates
+    trajectory_state: TrajectoryState
 
 
 class PPOTransition(NamedTuple):

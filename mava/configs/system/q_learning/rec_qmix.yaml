@@ -7,6 +7,9 @@ seed: 42
 # --- Agent observations ---
 add_agent_id: True
 
+# --- Trajectory length for individual and joint trajectory history ---
+traj_len: 10 # Length of historical trajectory buffer (K)
+
 # --- RL hyperparameters ---
 min_buffer_size: 32
 update_batch_size: 1 # Number of vectorised gradient updates per device.

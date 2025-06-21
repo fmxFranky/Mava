@@ -11,6 +11,33 @@ In all cases IPPO implies that it is an implementation following the independent
 
 In addition to the Anakin-based implementations, we also include a Sebulba-based implementation of [ff-IPPO](../../systems/ppo/sebulba/ff_ippo.py) which can be used on environments that are not written in JAX and adhere to the Gymnasium API.
 
+## Trajectory Support (rec-MAPPO)
+
+The recurrent MAPPO implementation now includes trajectory support, providing historical trajectory information to the actor and critic networks. This enhancement maintains two types of trajectory data:
+
+### Trajectory Types
+- **Individual Trajectory**: Historical trajectory for the current agent
+  - `observations`: Shape `[B, K, *obs_dim]` - K recent observations
+  - `actions`: Shape `[B, K, *act_dim]` - K recent actions
+  
+- **Joint Trajectory**: Historical trajectory for all agents  
+  - `observations`: Shape `[B, N, K, *obs_dim]` - K recent observations for all N agents
+  - `actions`: Shape `[B, N, K, *act_dim]` - K recent actions for all N agents
+
+### Configuration
+Set the trajectory length K via the `traj_len` parameter in your configuration:
+```yaml
+system:
+  traj_len: 10  # Length of trajectory history (default: 10)
+```
+
+### Current Implementation Status
+- **Status**: Trajectory data is collected and passed to networks but not currently used in computation
+- **Networks**: Both RecurrentActor and RecurrentValueNet accept trajectory parameters
+- **TODO**: Future implementations will process trajectory data for enhanced learning
+
+The trajectory functionality is designed to support more sophisticated multi-agent coordination algorithms while maintaining compatibility with existing PPO implementations.
+
 ## Relevant papers:
 * [Proximal Policy Optimization Algorithms](https://arxiv.org/pdf/1707.06347)
 * [The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games](https://arxiv.org/pdf/2103.01955)

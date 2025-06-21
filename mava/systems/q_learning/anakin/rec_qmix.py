@@ -41,9 +41,10 @@ from mava.systems.q_learning.types import (
     Metrics,
     QMIXParams,
     TrainState,
+    TrajectoryState,
     Transition,
 )
-from mava.types import MarlEnv, MavaObservation
+from mava.types import IndividualTrajectory, JointTrajectory, MarlEnv, MavaObservation
 from mava.utils import make_env as environments
 from mava.utils.checkpointing import Checkpointer
 from mava.utils.config import check_total_timesteps
@@ -106,11 +107,16 @@ def init(
     # Making recurrent Q network
     pre_torso = hydra.utils.instantiate(cfg.network.q_network.pre_torso)
     post_torso = hydra.utils.instantiate(cfg.network.q_network.post_torso)
+
+    # Set trajectory length, default to 10 if not specified
+    traj_len = getattr(cfg.system, "traj_len", 10)
+
     q_net = RecQNetwork(
         pre_torso=pre_torso,
         post_torso=post_torso,
         num_actions=action_dim,
         hidden_state_dim=cfg.network.hidden_state_dim,
+        traj_len=traj_len,
     )
     q_params = q_net.init(q_key, init_hidden_state, init_x)
     q_target_params = q_net.init(q_key, init_hidden_state, init_x)
@@ -212,6 +218,25 @@ def init(
     first_keys = jax.random.split(key, (cfg.arch.n_devices * cfg.system.update_batch_size))
     first_keys = first_keys.reshape((cfg.arch.n_devices, cfg.system.update_batch_size, -1))
 
+    # Initialize trajectory state for managing historical observations and actions
+    obs_shape = first_obs.agents_view.shape  # (num_envs, num_agents, obs_dim)
+
+    # Initialize trajectory buffers: [B, N, K, *obs_dim/act_dim]
+    init_obs_history = jnp.zeros((cfg.arch.num_envs, num_agents, traj_len, *obs_shape[2:]))
+    init_action_history = jnp.zeros((cfg.arch.num_envs, num_agents, traj_len), dtype=jnp.int32)
+    init_buffer_idx = jnp.zeros((cfg.arch.num_envs,), dtype=jnp.int32)
+    init_buffer_full = jnp.zeros((cfg.arch.num_envs,), dtype=bool)
+
+    init_trajectory_state = TrajectoryState(
+        obs_history=init_obs_history,
+        action_history=init_action_history,
+        buffer_idx=init_buffer_idx,
+        buffer_full=init_buffer_full,
+    )
+
+    # Replicate trajectory state across devices
+    init_trajectory_state = replicate(init_trajectory_state)
+
     # Initial learner state.
     learner_state = LearnerState(
         first_obs,
@@ -225,6 +250,7 @@ def init(
         buffer_state,
         params,
         first_keys,
+        init_trajectory_state,
     )
 
     return (env, eval_env), q_net, q_mixer, opt, rb, learner_state, logger, key
@@ -238,10 +264,61 @@ def make_update_fns(
     opt: optax.GradientTransformation,
     rb: TrajectoryBuffer,
 ) -> Callable[[LearnerState[QMIXParams]], Tuple[LearnerState[QMIXParams], Tuple[Metrics, Metrics]]]:
+    def update_trajectory_state(
+        trajectory_state: TrajectoryState,
+        obs: MavaObservation,
+        action: Array,
+    ) -> TrajectoryState:
+        """Shift the history left and append the new (obs, action) at the end (axis=2)."""
+
+        # Shift history by one step along the trajectory axis (axis=2)
+        new_obs_history = jnp.roll(trajectory_state.obs_history, shift=-1, axis=2)
+        new_action_history = jnp.roll(trajectory_state.action_history, shift=-1, axis=2)
+
+        # Set the last position to the current observation/action
+        new_obs_history = new_obs_history.at[:, :, -1, ...].set(obs.agents_view)
+        new_action_history = new_action_history.at[:, :, -1].set(action)
+
+        # Update buffer index (capped at traj_len)
+        new_buffer_idx = jnp.minimum(trajectory_state.buffer_idx + 1, new_obs_history.shape[2])
+        new_buffer_full = trajectory_state.buffer_full | (
+            new_buffer_idx == new_obs_history.shape[2]
+        )
+
+        return TrajectoryState(
+            obs_history=new_obs_history,
+            action_history=new_action_history,
+            buffer_idx=new_buffer_idx,
+            buffer_full=new_buffer_full,
+        )
+
+    def construct_trajectories(
+        trajectory_state: TrajectoryState, current_obs: MavaObservation, agent_idx: int = 0
+    ) -> Tuple[IndividualTrajectory, JointTrajectory]:
+        """Construct individual and joint trajectories from trajectory state."""
+        # Data is maintained as a shift-based history of fixed length K
+        obs_history = trajectory_state.obs_history  # [B, N, K, *obs_dim]
+        action_history = trajectory_state.action_history  # [B, N, K]
+
+        # Construct individual trajectory for specific agent
+        individual_traj = IndividualTrajectory(
+            observations=obs_history[:, agent_idx],  # [B, K, *obs_dim]
+            actions=action_history[:, agent_idx],  # [B, K]
+        )
+
+        # Construct joint trajectory for all agents
+        joint_traj = JointTrajectory(
+            observations=obs_history,  # [B, N, K, *obs_dim]
+            actions=action_history,  # [B, N, K]
+        )
+        return individual_traj, joint_traj
+
     def select_eps_greedy_action(
         action_selection_state: ActionSelectionState,
         obs: MavaObservation,
         term_or_trunc: Array,
+        trajectory_state: TrajectoryState,
+        agent_idx: int = 0,
     ) -> Tuple[ActionSelectionState, Array]:
         """Select action to take in eps-greedy way. Batch and agent dims are included."""
 
@@ -254,8 +331,21 @@ def make_update_fns(
         obs = tree.map(lambda x: x[jnp.newaxis, ...], obs)
         term_or_trunc = tree.map(lambda x: x[jnp.newaxis, ...], term_or_trunc)
 
+        # Construct individual and joint trajectories
+        individual_traj, joint_traj = construct_trajectories(trajectory_state, obs[0], agent_idx)
+
+        # Add batch dimension to trajectories to match network input format
+        individual_traj = IndividualTrajectory(
+            observations=individual_traj.observations[jnp.newaxis, ...],
+            actions=individual_traj.actions[jnp.newaxis, ...],
+        )
+        joint_traj = JointTrajectory(
+            observations=joint_traj.observations[jnp.newaxis, ...],
+            actions=joint_traj.actions[jnp.newaxis, ...],
+        )
+
         next_hidden_state, eps_greedy_dist = q_net.apply(
-            params, hidden_state, (obs, term_or_trunc), eps
+            params, hidden_state, (obs, term_or_trunc), eps, individual_traj, joint_traj
         )
 
         new_key, explore_key = jax.random.split(key, 2)
@@ -269,7 +359,9 @@ def make_update_fns(
         )
         return next_action_selection_state, action
 
-    def action_step(action_state: ActionState, _: Any) -> Tuple[ActionState, Dict]:
+    def action_step(
+        action_state: ActionState, trajectory_state: TrajectoryState
+    ) -> Tuple[Tuple[ActionState, TrajectoryState], Dict]:
         """Selects an action, steps global env, stores timesteps in global rb and repacks the
         parameters for the next step.
         """
@@ -277,8 +369,11 @@ def make_update_fns(
         action_selection_state, env_state, buffer_state, obs, terminal, term_or_trunc = action_state
 
         next_action_selection_state, action = select_eps_greedy_action(
-            action_selection_state, obs, term_or_trunc
+            action_selection_state, obs, term_or_trunc, trajectory_state
         )
+
+        # Update trajectory state with current observation and selected action
+        updated_trajectory_state = update_trajectory_state(trajectory_state, obs, action)
 
         next_env_state, next_timestep = jax.vmap(env.step)(env_state, action)
 
@@ -308,7 +403,7 @@ def make_update_fns(
         )
 
         metrics = next_timestep.extras["episode_metrics"] | next_timestep.extras["env_metrics"]
-        return new_act_state, metrics
+        return (new_act_state, updated_trajectory_state), metrics
 
     def prep_inputs_to_scannedrnn(obs: MavaObservation, term_or_trunc: chex.Array) -> chex.Array:
         """Prepares the inputs to the RNN network for either getting q values or the
@@ -341,8 +436,9 @@ def make_update_fns(
         hidden_state, obs_term_or_trunc = prep_inputs_to_scannedrnn(obs, term_or_trunc)
 
         # Get online q values of all actions
+        # TODO: Add trajectory information to q_loss_fn as well, currently using None
         _, q_online = q_net.apply(
-            q_online_params, hidden_state, obs_term_or_trunc, method="get_q_values"
+            q_online_params, hidden_state, obs_term_or_trunc, None, None, method="get_q_values"
         )
         q_online = switch_leading_axes(q_online)  # (T, B, ...) -> (B, T, ...)
         # Get the q values of the taken actions and remove extra dim
@@ -385,7 +481,11 @@ def make_update_fns(
         hidden_state, next_obs_term_or_trunc = prep_inputs_to_scannedrnn(
             data_full.obs, data_full.term_or_trunc
         )  # (T, B, ...)
-        _, next_greedy_dist = q_net.apply(params.online, hidden_state, next_obs_term_or_trunc)
+
+        # TODO: Add trajectory information to training as well, currently using None
+        _, next_greedy_dist = q_net.apply(
+            params.online, hidden_state, next_obs_term_or_trunc, 0.0, None, None
+        )
         next_action = next_greedy_dist.mode()  # (T, B, ...)
         next_action = switch_leading_axes(next_action)  # (T, B, ...) -> (B, T, ...)
         next_action = next_action[:, 1:, ...]  # (B, T, ...)
@@ -395,7 +495,7 @@ def make_update_fns(
         )  # (T, B, ...)
 
         _, next_q_vals_target = q_net.apply(
-            params.target, hidden_state, next_obs_term_or_trunc, method="get_q_values"
+            params.target, hidden_state, next_obs_term_or_trunc, None, None, method="get_q_values"
         )
         next_q_vals_target = switch_leading_axes(next_q_vals_target)  # (T, B, ...) -> (B, T, ...)
         next_q_vals_target = next_q_vals_target[:, 1:, ...]  # (B, T, ...)
@@ -498,6 +598,7 @@ def make_update_fns(
             buffer_state,
             params,
             key,
+            trajectory_state,
         ) = learner_state
         new_key, act_key, train_key = jax.random.split(key, 3)
 
@@ -508,7 +609,18 @@ def make_update_fns(
         action_state = ActionState(
             action_selection_state, env_state, buffer_state, obs, terminal, term_or_trunc
         )
-        final_action_state, metrics = scanned_act(action_state)
+
+        # Modified to include trajectory state management
+        def scanned_act_with_trajectory(state_traj_pair, _):
+            action_state, traj_state = state_traj_pair
+            return action_step(action_state, traj_state)
+
+        (final_action_state, final_trajectory_state), metrics = lax.scan(
+            scanned_act_with_trajectory,
+            (action_state, trajectory_state),
+            None,
+            length=cfg.system.rollout_length,
+        )
 
         # Sample and learn
         train_state = TrainState(
@@ -528,6 +640,7 @@ def make_update_fns(
             final_action_state.buffer_state,
             final_train_state.params,
             new_key,
+            final_trajectory_state,
         )
 
         return next_learner_state, (metrics, losses)
@@ -578,7 +691,11 @@ def run_experiment(cfg: DictConfig) -> float:
         term_or_trunc = timestep.last()
         net_input = (timestep.observation, term_or_trunc[..., jnp.newaxis])
         net_input = tree.map(lambda x: x[jnp.newaxis], net_input)  # add batch dim to obs
-        next_hidden_state, eps_greedy_dist = q_net.apply(params, hidden_state, net_input)
+
+        # TODO: For evaluation, we don't have trajectory history, so pass None
+        next_hidden_state, eps_greedy_dist = q_net.apply(
+            params, hidden_state, net_input, 0.0, None, None
+        )
         action = eps_greedy_dist.sample(seed=key).squeeze(0)
         return action, {"hidden_state": next_hidden_state}
 
