@@ -570,7 +570,7 @@ def learner_setup(
     # Get batched iterated update and replicate it to pmap it over cores.
     learn = get_learner_fn(env, apply_fns, update_fns, config)
     # Map learner over specified devices
-    devices = jax.local_devices()[:n_devices]
+    devices = jax.local_devices()[: n_devices]
     learn = jax.pmap(learn, axis_name="device", devices=devices)
 
     # Pack params and initial states.
