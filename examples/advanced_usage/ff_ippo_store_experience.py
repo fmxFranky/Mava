@@ -351,8 +351,8 @@ def learner_setup(
     env: MarlEnv, keys: chex.Array, config: DictConfig
 ) -> Tuple[StoreExpLearnerFn[LearnerState], Actor, LearnerState]:
     """Initialise learner_fn, network, optimiser, environment and states."""
-    # Get available TPU cores.
-    n_devices = len(jax.devices())
+    # Get available devices with default to 1.
+    n_devices = min(config.arch.get("n_devices", 1), len(jax.local_devices()))
 
     # Get number of actions and agents.
     num_actions = env.action_dim
@@ -439,7 +439,8 @@ def learner_setup(
     replicate_learner = tree.map(broadcast, replicate_learner)
 
     # Duplicate learner across devices.
-    replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=jax.devices())
+    devices = jax.local_devices()[:n_devices]
+    replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=devices)
 
     # Initialise learner state.
     params, opt_states, step_keys, dones = replicate_learner
@@ -455,7 +456,7 @@ def run_experiment(_config: DictConfig) -> None:
     config = copy.deepcopy(_config)
     logger = MavaLogger(config)
 
-    n_devices = len(jax.devices())
+    n_devices = min(config.arch.get("n_devices", 1), len(jax.local_devices()))
 
     # Create the enviroments for train and eval.
     env, eval_env = make(config=config)
@@ -488,7 +489,7 @@ def run_experiment(_config: DictConfig) -> None:
         * config.arch.num_envs
     )
     cfg: Dict = OmegaConf.to_container(config, resolve=True)
-    cfg["arch"]["devices"] = jax.devices()
+    cfg["arch"]["devices"] = jax.local_devices()[:n_devices]
     pprint(cfg)
 
     # Set up checkpointer

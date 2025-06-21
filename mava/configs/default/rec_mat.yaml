@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - logger: logger
+  - arch: anakin
+  - system: mat/rec_mat
+  - network: transformer
+  - env: ???
+  - _self_
+
+# Override system name
+system_name: rec_mat
+
+hydra:
+  searchpath:
+    - file://mava/configs
+
+logger:
+  system_name: rec_mat 

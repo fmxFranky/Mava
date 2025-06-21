@@ -646,9 +646,11 @@ def run_experiment(_config: DictConfig) -> float:
     config = copy.deepcopy(_config)
 
     local_devices = jax.local_devices()
-    devices = jax.devices()
+    # 使用配置中的n_devices参数，默认为1
+    n_devices = min(config.arch.get("n_devices", 1), len(jax.local_devices()))
+    devices = jax.local_devices()[:n_devices]
     err = "Local and global devices must be the same, we dont support multihost yet"
-    assert len(local_devices) == len(devices), err
+    assert len(local_devices) >= len(devices), err
     learner_devices = [devices[d_id] for d_id in config.arch.learner_device_ids]
     actor_devices = [local_devices[device_id] for device_id in config.arch.actor_device_ids]
 
@@ -685,7 +687,7 @@ def run_experiment(_config: DictConfig) -> float:
     # Logger setup
     logger = MavaLogger(config)
     print_cfg: Dict = OmegaConf.to_container(config, resolve=True)
-    print_cfg["arch"]["devices"] = jax.devices()
+    print_cfg["arch"]["devices"] = devices
     pprint(print_cfg)
 
     # Set up checkpointer

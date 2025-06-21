@@ -1,6 +1,9 @@
 # --- Sebulba config ---
 architecture_name: sebulba
 
+# --- Devices ---
+n_devices: 1  # Number of devices to use. Default to 1 for single GPU training.
+
 # --- Training ---
 num_envs: 32  # number of environments per thread.
 

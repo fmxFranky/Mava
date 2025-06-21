@@ -1,6 +1,9 @@
 # --- Anakin config ---
 architecture_name: anakin
 
+# --- Devices ---
+n_devices: 1  # Number of devices to use. Default to 1 for single GPU training.
+
 # --- Training ---
 num_envs: 16  # Number of vectorised environments per device.
 

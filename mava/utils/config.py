@@ -48,7 +48,7 @@ def check_total_timesteps(config: DictConfig) -> DictConfig:
     """Check if total_timesteps is set, if not, set it based on the other parameters"""
 
     if config.arch.architecture_name == "anakin":
-        n_devices = len(jax.devices())
+        n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
         update_batch_size = config.system.update_batch_size
     else:
         n_devices = 1  # We only use a single device's output when updating.
