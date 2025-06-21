@@ -352,8 +352,8 @@ def learner_setup(
     env: MarlEnv, keys: chex.Array, config: DictConfig
 ) -> Tuple[LearnerFn[LearnerState], Callable, LearnerState]:
     """Initialise learner_fn, network, optimiser, environment and states."""
-    # Get available TPU cores.
-    n_devices = len(jax.devices())
+    # Determine number of devices: use configured arch.n_devices or default to 1
+    n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
 
     # Get number of agents.
     config.system.num_agents = env.num_agents
@@ -417,7 +417,9 @@ def learner_setup(
 
     # Get batched iterated update and replicate it to pmap it over cores.
     learn = get_learner_fn(env, apply_fns, optim.update, config)
-    learn = jax.pmap(learn, axis_name="device")
+    # Map learner over specified devices
+    devices = jax.local_devices()[:n_devices]
+    learn = jax.pmap(learn, axis_name="device", devices=devices)
 
     # Initialise environment states and timesteps: across devices and batches.
     key, *env_keys = jax.random.split(
@@ -460,8 +462,8 @@ def learner_setup(
     init_hstates = tree.map(broadcast, init_hstates)
 
     # Duplicate learner across devices.
-    replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=jax.devices())
-    init_hstates = flax.jax_utils.replicate(init_hstates, devices=jax.devices())
+    replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=devices)
+    init_hstates = flax.jax_utils.replicate(init_hstates, devices=devices)
 
     # Initialise learner state.
     params, opt_state, step_keys = replicate_learner
@@ -483,7 +485,8 @@ def run_experiment(_config: DictConfig) -> float:
     _config.logger.system_name = "rec_sable"
     config = copy.deepcopy(_config)
 
-    n_devices = len(jax.devices())
+    # Determine number of devices: use configured arch.n_devices or default to 1
+    n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
 
     # Create the enviroments for train and eval.
     env, eval_env = environments.make(config)
@@ -549,7 +552,8 @@ def run_experiment(_config: DictConfig) -> float:
     # Create an initial hidden state used for resetting memory for evaluation
     eval_batch_size = get_num_eval_envs(config, absolute_metric=False)
     eval_hs = get_init_hidden_state(config.network.net_config, eval_batch_size)
-    eval_hs = flax.jax_utils.replicate(eval_hs, devices=jax.devices())
+    eval_hs = flax.jax_utils.replicate(eval_hs, devices=jax.local_devices()[:n_devices])
+    sable_execution_fn = partial(sable_execution_fn, hstates=eval_hs)
 
     # Run experiment for a total number of evaluations.
     max_episode_return = -jnp.inf

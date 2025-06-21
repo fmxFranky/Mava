@@ -65,7 +65,8 @@ class EvalActFn(Protocol):
 
 def get_num_eval_envs(config: DictConfig, absolute_metric: bool) -> int:
     """Returns the number of vmapped envs/batch size during evaluation."""
-    n_devices = jax.device_count() if config.arch.architecture_name == "anakin" else 1
+    # Determine number of devices for evaluation: use configured arch.n_devices or default to 1
+    n_devices = config.arch.get("n_devices", 1) if config.arch.architecture_name == "anakin" else 1
     n_parallel_envs = config.arch.num_envs * n_devices
 
     if absolute_metric:
@@ -93,7 +94,8 @@ def get_eval_fn(
         absolute_metric: whether or not this evaluator calculates the absolute_metric.
                 This determines how many evaluation episodes it does.
     """
-    n_devices = jax.device_count()
+    # Determine number of devices for evaluation: use configured arch.n_devices or default to 1
+    n_devices = config.arch.get("n_devices", 1)
     eval_episodes = (
         config.arch.num_absolute_metric_eval_episodes
         if absolute_metric
@@ -160,7 +162,9 @@ def get_eval_fn(
         """Wrapper around eval function to time it and add in steps per second metric."""
         start_time = time.time()
 
-        metrics = jax.pmap(eval_fn)(params, key, init_act_state)
+        # Map evaluation function over specified devices
+        devices = jax.local_devices()[: config.arch.get("n_devices", 1)]
+        metrics = jax.pmap(eval_fn, devices=devices)(params, key, init_act_state)
         metrics = jax.block_until_ready(metrics)
 
         end_time = time.time()

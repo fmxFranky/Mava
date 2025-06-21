@@ -325,8 +325,8 @@ def learner_setup(
     env: MarlEnv, keys: chex.Array, config: DictConfig
 ) -> Tuple[LearnerFn[LearnerState], Callable, LearnerState]:
     """Initialise learner_fn, network, optimiser, environment and states."""
-    # Get available TPU cores.
-    n_devices = len(jax.devices())
+    # Determine number of devices: use configured arch.n_devices or default to 1
+    n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
 
     # PRNG keys.
     key, net_key = keys
@@ -403,7 +403,9 @@ def learner_setup(
 
     # Get batched iterated update and replicate it to pmap it over cores.
     learn = get_learner_fn(env, apply_fns, optim.update, config)
-    learn = jax.pmap(learn, axis_name="device")
+    # Map learner over specified devices
+    devices = jax.local_devices()[:n_devices]
+    learn = jax.pmap(learn, axis_name="device", devices=devices)
 
     # Initialise environment states and timesteps: across devices and batches.
     key, *env_keys = jax.random.split(
@@ -439,7 +441,9 @@ def learner_setup(
     replicate_learner = tree.map(broadcast, replicate_learner)
 
     # Duplicate learner across devices.
-    replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=jax.devices())
+    replicate_learner = flax.jax_utils.replicate(
+        replicate_learner, devices=jax.local_devices()[:n_devices]
+    )
 
     # Initialise learner state.
     params, opt_state, step_keys = replicate_learner
@@ -460,7 +464,8 @@ def run_experiment(_config: DictConfig) -> float:
     _config.logger.system_name = "ff_sable"
     config = copy.deepcopy(_config)
 
-    n_devices = len(jax.devices())
+    # Determine number of devices: use configured arch.n_devices or default to 1
+    n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
 
     # Create the enviroments for train and eval.
     env, eval_env = environments.make(config)

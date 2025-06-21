@@ -128,7 +128,8 @@ def init(
     logger = MavaLogger(cfg)
 
     key = jax.random.PRNGKey(cfg.system.seed)
-    devices = jax.devices()
+    # Determine devices for training: use configured arch.n_devices or default to 1
+    devices = jax.local_devices()[: cfg.arch.n_devices]
 
     def replicate(x: Any) -> Any:
         """First replicate the update batch dim then put on devices."""
@@ -594,7 +595,8 @@ def make_update_fns(
 def run_experiment(cfg: DictConfig) -> float:
     # Add runtime variables to config
     cfg.logger.system_name = "ff_hasac"
-    cfg.arch.n_devices = len(jax.devices())
+    # Determine number of devices: default to 1 unless override via config
+    cfg.arch.n_devices = min(cfg.arch.get("n_devices", 1), len(jax.devices()))
     cfg = check_total_timesteps(cfg)
 
     # Number of env steps before evaluating/logging.

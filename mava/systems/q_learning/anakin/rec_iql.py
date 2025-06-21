@@ -71,7 +71,9 @@ def init(
     logger = MavaLogger(cfg)
 
     key = jax.random.PRNGKey(cfg.system.seed)
-    devices = jax.devices()
+
+    # Determine devices for training: use configured arch.n_devices or default to 1
+    devices = jax.local_devices()[: cfg.arch.n_devices]
 
     def replicate(x: Any) -> Any:
         """First replicate the update batch dim then put on devices."""
@@ -477,12 +479,15 @@ def make_update_fns(
 
         return next_learner_state, (metrics, losses)
 
+    # Map update over specified devices
+    devices = jax.local_devices()[: cfg.arch.n_devices]
     pmaped_update_step = jax.pmap(
         jax.vmap(
             lambda state: lax.scan(update_step, state, None, length=cfg.system.scan_steps),
             axis_name="batch",
         ),
         axis_name="device",
+        devices=devices,
         donate_argnums=0,
     )
 
@@ -492,7 +497,8 @@ def make_update_fns(
 def run_experiment(cfg: DictConfig) -> float:
     # Add runtime variables to config
     cfg.logger.system_name = "rec_iql"
-    cfg.arch.n_devices = len(jax.devices())
+    # Determine number of devices: default to 1 unless override via config
+    cfg.arch.n_devices = min(cfg.arch.get("n_devices", 1), len(jax.devices()))
     cfg = check_total_timesteps(cfg)
 
     # Number of env steps before evaluating/logging.
@@ -540,7 +546,7 @@ def run_experiment(cfg: DictConfig) -> float:
     # Create an initial hidden state used for resetting memory for evaluation
     eval_batch_size = get_num_eval_envs(cfg, absolute_metric=False)
     eval_hs = ScannedRNN.initialize_carry(
-        (jax.device_count(), eval_batch_size, cfg.system.num_agents),
+        (cfg.arch.n_devices, eval_batch_size, cfg.system.num_agents),
         cfg.network.hidden_state_dim,
     )
 
@@ -604,7 +610,7 @@ def run_experiment(cfg: DictConfig) -> float:
         eval_keys = jax.random.split(key, cfg.arch.n_devices)
         eval_batch_size = get_num_eval_envs(cfg, absolute_metric=True)
         eval_hs = ScannedRNN.initialize_carry(
-            (jax.device_count(), eval_batch_size, cfg.system.num_agents),
+            (cfg.arch.n_devices, eval_batch_size, cfg.system.num_agents),
             cfg.network.hidden_state_dim,
         )
 
