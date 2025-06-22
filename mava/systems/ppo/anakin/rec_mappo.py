@@ -14,15 +14,17 @@
 
 import copy
 import time
-from typing import Any, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import chex
+import flashbax as fbx
 import flax
 import hydra
 import jax
 import jax.numpy as jnp
 import optax
 from colorama import Fore, Style
+from flashbax.vault import Vault
 from flax.core.frozen_dict import FrozenDict
 from jax import tree
 from omegaconf import DictConfig, OmegaConf
@@ -59,6 +61,11 @@ from mava.utils.multistep import calculate_gae
 from mava.utils.network_utils import get_action_head
 from mava.utils.training import make_learning_rate
 from mava.wrappers.episode_metrics import get_final_step_metrics
+
+# Define the learner function type that returns experience data
+StoreExpLearnerFn = Callable[
+    [RNNLearnerState], Tuple[ExperimentOutput[RNNLearnerState], RNNPPOTransition]
+]
 
 
 def update_trajectory_state(
@@ -117,7 +124,7 @@ def get_learner_fn(
     apply_fns: Tuple[RecActorApply, RecCriticApply],
     update_fns: Tuple[optax.TransformUpdateFn, optax.TransformUpdateFn],
     config: DictConfig,
-) -> LearnerFn[RNNLearnerState]:
+) -> StoreExpLearnerFn:
     """Get the learner function."""
     actor_apply_fn, critic_apply_fn = apply_fns
     actor_update_fn, critic_update_fn = update_fns
@@ -450,9 +457,11 @@ def get_learner_fn(
             hstates,
             trajectory_state,
         )
-        return learner_state, (episode_metrics, loss_info)
+        return learner_state, (episode_metrics, loss_info, traj_batch)
 
-    def learner_fn(learner_state: RNNLearnerState) -> ExperimentOutput[RNNLearnerState]:
+    def learner_fn(
+        learner_state: RNNLearnerState,
+    ) -> Tuple[ExperimentOutput[RNNLearnerState], RNNPPOTransition]:
         """Learner function.
 
         This function represents the learner, it updates the network parameters
@@ -473,13 +482,16 @@ def get_learner_fn(
         """
         batched_update_step = jax.vmap(_update_step, in_axes=(0, None), axis_name="batch")
 
-        learner_state, (episode_info, loss_info) = jax.lax.scan(
+        learner_state, (episode_info, loss_info, traj_batch) = jax.lax.scan(
             batched_update_step, learner_state, None, config.system.num_updates_per_eval
         )
-        return ExperimentOutput(
-            learner_state=learner_state,
-            episode_metrics=episode_info,
-            train_metrics=loss_info,
+        return (
+            ExperimentOutput(
+                learner_state=learner_state,
+                episode_metrics=episode_info,
+                train_metrics=loss_info,
+            ),
+            traj_batch,
         )
 
     return learner_fn
@@ -487,7 +499,7 @@ def get_learner_fn(
 
 def learner_setup(
     env: MarlEnv, keys: chex.Array, config: DictConfig
-) -> Tuple[LearnerFn[RNNLearnerState], Actor, RNNLearnerState]:
+) -> Tuple[StoreExpLearnerFn, Actor, RNNLearnerState]:
     """Initialise learner_fn, network, optimiser, environment and states."""
     # Determine number of devices: default to 1 unless override via config
     n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
@@ -570,7 +582,7 @@ def learner_setup(
     # Get batched iterated update and replicate it to pmap it over cores.
     learn = get_learner_fn(env, apply_fns, update_fns, config)
     # Map learner over specified devices
-    devices = jax.local_devices()[: n_devices]
+    devices = jax.local_devices()[:n_devices]
     learn = jax.pmap(learn, axis_name="device", devices=devices)
 
     # Pack params and initial states.
@@ -671,6 +683,12 @@ def run_experiment(_config: DictConfig) -> float:
     _config.logger.system_name = "rec_mappo"
     config = copy.deepcopy(_config)
 
+    # Vault configuration
+    save_vault = getattr(config.system, "save_vault", False)
+    vault_name = getattr(config.system, "vault_name", "rec_mappo")
+    vault_uid = getattr(config.system, "vault_uid", None)
+    vault_save_interval = getattr(config.system, "vault_save_interval", 5)
+
     # Determine number of devices: default to 1 unless override via config
     n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
 
@@ -733,6 +751,78 @@ def run_experiment(_config: DictConfig) -> float:
             **config.logger.checkpointing.save_args,  # Checkpoint args
         )
 
+    # Set up vault for experience storage if enabled
+    buffer_state = None
+    vault = None
+    buffer_add = None
+    if save_vault:
+        # Get observation dims from environment spec
+        sample_obs = env.observation_spec.generate_value()
+        obs_shape = (
+            sample_obs.agents_view.shape[1:]
+            if hasattr(sample_obs, "agents_view")
+            else sample_obs.shape[1:]
+        )
+
+        # Get action spec to determine correct action shape and dtype
+        sample_action = env.action_spec.generate_value()
+        action_shape = sample_action.shape
+        action_dtype = jnp.array(sample_action).dtype
+
+        # Set up dummy transition based on actual environment specs
+        dummy_flashbax_transition = {
+            "done": jnp.zeros((config.system.num_agents,), dtype=bool),
+            "action": jnp.zeros(action_shape, dtype=action_dtype),
+            "reward": jnp.zeros((config.system.num_agents,), dtype=jnp.float32),
+            "observation": jnp.zeros(
+                (config.system.num_agents, *obs_shape),
+                dtype=jnp.float32,
+            ),
+            "legal_action_mask": jnp.zeros(
+                (config.system.num_agents, env.action_dim),
+                dtype=bool,
+            ),
+        }
+
+        buffer = fbx.make_flat_buffer(
+            max_length=int(5e5),  # Max number of transitions to store
+            min_length=int(1),
+            sample_batch_size=1,
+            add_sequences=True,
+            add_batch_size=(
+                n_devices
+                * config.system.num_updates_per_eval
+                * config.system.update_batch_size
+                * config.arch.num_envs
+            ),
+        )
+        buffer_state = buffer.init(dummy_flashbax_transition)
+        buffer_add = jax.jit(buffer.add, donate_argnums=(0))
+
+        # Create vault
+        vault = Vault(
+            vault_name=vault_name,
+            experience_structure=buffer_state.experience,
+            vault_uid=vault_uid,
+            metadata=OmegaConf.to_container(config, resolve=True),
+        )
+
+        # Shape legend:
+        # D: Number of devices
+        # NU: Number of updates per evaluation
+        # UB: Update batch size
+        # T: Time steps per rollout
+        # NE: Number of environments
+
+        @jax.jit
+        def _reshape_experience(experience: Dict[str, chex.Array]) -> Dict[str, chex.Array]:
+            """Reshape experience to match buffer."""
+            # Swap the T and NE axes (D, NU, UB, T, NE, ...) -> (D, NU, UB, NE, T, ...)
+            experience = tree.map(lambda x: x.swapaxes(3, 4), experience)
+            # Merge 4 leading dimensions into 1. (D, NU, UB, NE, T ...) -> (D * NU * UB * NE, T, ...)
+            experience = tree.map(lambda x: x.reshape(-1, *x.shape[4:]), experience)
+            return experience
+
     # Create an initial hidden state used for resetting memory for evaluation
     eval_batch_size = get_num_eval_envs(config, absolute_metric=False)
     eval_hs = ScannedRNN.initialize_carry(
@@ -745,7 +835,29 @@ def run_experiment(_config: DictConfig) -> float:
     for eval_step in range(config.arch.num_evaluation):
         # Train.
         start_time = time.time()
-        learner_output = learn(learner_state)
+        learner_output, experience_to_store = learn(learner_state)
+
+        # Record data into the vault if enabled
+        if save_vault:
+            # Pack transition (avoiding individual_trajectory and joint_trajectory)
+            flashbax_transition = _reshape_experience(
+                {
+                    # (D, NU, UB, T, NE, ...)
+                    "done": experience_to_store.done,
+                    "action": experience_to_store.action,
+                    "reward": experience_to_store.reward,
+                    "observation": experience_to_store.obs.agents_view,
+                    "legal_action_mask": experience_to_store.obs.action_mask,
+                }
+            )
+            # Add to fbx buffer
+            buffer_state = buffer_add(buffer_state, flashbax_transition)
+
+            # Save buffer into vault
+            if eval_step % vault_save_interval == 0:
+                write_length = vault.write(buffer_state)
+                print(f"(Wrote {write_length}) Vault index = {vault.vault_index}")
+
         jax.block_until_ready(learner_output)
 
         # Log the results of the training.
@@ -784,6 +896,10 @@ def run_experiment(_config: DictConfig) -> float:
 
         # Update runner state to continue training.
         learner_state = learner_output.learner_state
+
+    # Final write to vault for any remaining data
+    if save_vault and vault is not None:
+        vault.write(buffer_state)
 
     # Record the performance for the final evaluation run.
     eval_performance = float(jnp.mean(eval_metrics[config.env.eval_metric]))

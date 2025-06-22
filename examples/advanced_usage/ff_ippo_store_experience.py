@@ -52,7 +52,7 @@ StoreExpLearnerFn = Callable[[MavaState], Tuple[ExperimentOutput[MavaState], PPO
 
 # Experimental config
 SAVE_VAULT = True
-VAULT_NAME = "ff_ippo_rware"
+VAULT_NAME = "ff_ippo_smax"
 VAULT_UID = None  # None => timestamp
 VAULT_SAVE_INTERVAL = 5
 

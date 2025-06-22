@@ -23,3 +23,9 @@ max_grad_norm: 5 # Maximum norm of the gradients for a weight update.
 decay_learning_rates: False # Whether learning rates should be linearly decayed during training.
 
 normalise_value_targets: False
+
+# --- Vault settings for experience storage ---
+save_vault: False  # Whether to save experience data to vault
+vault_name: "mat"  # Name of the vault directory
+vault_uid: ~  # Optional unique identifier
+vault_save_interval: 5  # Episodes between writes to vault

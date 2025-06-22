@@ -110,5 +110,39 @@ buffer_state = v.read()
 
 For a demonstration of offline MARL training, see some examples [here](https://github.com/instadeepai/og-marl/tree/feat/vault).
 
+## Data recording from a Recurrent MAPPO system 🔴
+Similar to the feedforward IPPO example above, we also provide support for recording experience data from recurrent MAPPO systems. The rec_mappo system has been enhanced with vault functionality that allows you to store agent experiences while avoiding the storage of individual and joint trajectory data.
+
+### Configuration
+To enable experience recording in rec_mappo, you can set the following parameters in your system configuration:
+
+```yaml
+# --- Vault settings for experience storage ---
+save_vault: True # Whether to save experience data to vault
+vault_name: "rec_mappo_experiment" # Name of the vault for experience storage
+vault_uid: ~ # Unique identifier for vault. If unset, uses timestamp
+vault_save_interval: 5 # How often to save buffer to vault (in evaluation steps)
+```
+
+### Usage
+When `save_vault` is enabled, the rec_mappo system will:
+
+1. Automatically create a flashbax buffer and vault for storing experiences
+2. Record standard transition data (observations, actions, rewards, dones, legal action masks)
+3. Exclude individual_trajectory and joint_trajectory data from storage to save space
+4. Periodically write the buffer to the vault according to `vault_save_interval`
+5. Perform a final write at the end of training
+
+The stored experience data follows the same format as the feedforward version and can be used with offline MARL frameworks like [OG-MARL](https://github.com/instadeepai/og-marl).
+
+### Example
+To run rec_mappo with experience recording:
+
+```bash
+python -m mava.systems.ppo.anakin.rec_mappo system.save_vault=True system.vault_name="my_rec_mappo_vault"
+```
+
+The vault will automatically handle the recurrent nature of the data and store it in a format suitable for offline learning.
+
 ---
 ⚠️ Note: this functionality is highly experimental! The current API likely to change.
