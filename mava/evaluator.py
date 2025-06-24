@@ -15,8 +15,9 @@
 import math
 import time
 import warnings
-from typing import Any, Callable, Dict, Protocol, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Protocol, Tuple, Union
 
+import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -30,6 +31,7 @@ from typing_extensions import TypeAlias
 from mava.types import (
     Action,
     ActorApply,
+    JointTrajectory,
     MarlEnv,
     Metrics,
     Observation,
@@ -205,11 +207,152 @@ def make_rec_eval_act_fn(actor_apply_fn: RecActorApply, config: DictConfig) -> E
         ac_in = (timestep.observation, last_done)
         ac_in = tree.map(lambda x: x[jnp.newaxis], ac_in)  # add batch dim to obs
 
-        hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in)
+        hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, None)
         action = pi.mode() if config.arch.evaluation_greedy else pi.sample(seed=key)
         return action.squeeze(0), {_hidden_state: hidden_state}
 
     return eval_act_fn
+
+
+def make_rec_eval_act_fn_with_traj(actor_apply_fn: RecActorApply, config: DictConfig) -> EvalActFn:
+    """Makes an act function that conforms to the evaluator API given a standard
+    recurrent mava actor network with trajectory support.
+
+    In evaluation, following CTDE principle, we create a joint trajectory where only
+    the current agent's information is real and others are zero-filled.
+    """
+
+    _hidden_state = "hidden_state"
+    _trajectory_history = "trajectory_history"
+
+    def eval_act_fn(
+        params: FrozenDict, timestep: TimeStep, key: PRNGKey, actor_state: ActorState
+    ) -> Tuple[Action, Dict]:
+        hidden_state = actor_state[_hidden_state]
+        traj_history = actor_state.get(_trajectory_history, None)
+
+        n_agents = timestep.observation.agents_view.shape[1]
+        last_done = timestep.last()[:, jnp.newaxis].repeat(n_agents, axis=-1)
+        ac_in = (timestep.observation, last_done)
+        ac_in = tree.map(lambda x: x[jnp.newaxis], ac_in)  # add batch dim to obs
+
+        # Construct CTDE-compliant joint trajectory
+        joint_traj = construct_ctde_joint_trajectory(timestep.observation, traj_history, config)
+
+        hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, joint_traj)
+        action = pi.mode() if config.arch.evaluation_greedy else pi.sample(seed=key)
+
+        # Update trajectory history for next step
+        new_traj_history = update_eval_trajectory_history(
+            traj_history, timestep.observation, action.squeeze(0), config
+        )
+
+        return action.squeeze(0), {
+            _hidden_state: hidden_state,
+            _trajectory_history: new_traj_history,
+        }
+
+    return eval_act_fn
+
+
+def construct_ctde_joint_trajectory(
+    observation: Union["Observation", "ObservationGlobalState"],
+    traj_history: Optional[Dict],
+    config: DictConfig,
+) -> "JointTrajectory":
+    """Construct a CTDE-compliant joint trajectory for evaluation.
+
+    For each agent, only its own observations and actions are real, others are zero-filled.
+    This maintains the joint trajectory shape while respecting CTDE constraints.
+    """
+    traj_len = config.system.get("traj_len", 10)
+    n_envs = observation.agents_view.shape[0]
+    n_agents = observation.agents_view.shape[1]
+    obs_shape = observation.agents_view.shape[2:]
+
+    # Initialize with zeros if no history
+    if traj_history is None:
+        obs_history = jnp.zeros((n_envs, n_agents, traj_len, *obs_shape))
+        # Default to scalar actions - will be corrected when first action comes in
+        action_history = jnp.zeros((n_envs, n_agents, traj_len))
+    else:
+        obs_history = traj_history["obs_history"]
+        action_history = traj_history["action_history"]
+
+    # Apply CTDE masking using vectorized operations
+    # Create an identity matrix to mask each agent's own trajectory
+    # Shape: (n_agents, n_agents) - diagonal matrix
+    agent_mask = jnp.eye(n_agents)
+
+    # Expand mask to match trajectory dimensions
+    # For obs: add dimensions for traj_len and obs_shape
+    obs_mask_shape = (n_agents, n_agents, 1, *[1 for _ in obs_shape])
+    obs_mask = agent_mask.reshape(n_agents, n_agents, 1, 1).reshape(obs_mask_shape)
+
+    # For actions: add dimensions for traj_len and action dimensions
+    action_extra_dims = len(action_history.shape) - 3  # exclude (n_envs, n_agents, traj_len)
+    action_mask_shape = (n_agents, n_agents, 1, *[1 for _ in range(action_extra_dims)])
+    action_mask = agent_mask.reshape(n_agents, n_agents, 1).reshape(action_mask_shape)
+
+    # Vectorized CTDE masking: each agent can only see its own trajectory
+    # Use einsum to apply per-agent masking efficiently
+    # obs_history: (n_envs, n_agents, traj_len, *obs_shape)
+    # obs_mask: (n_agents, n_agents, 1, 1, ...)
+    # Result: (n_envs, n_agents, traj_len, *obs_shape) where each agent only sees its own data
+    ctde_obs_history = jnp.einsum("ij...,ej...->ei...", obs_mask, obs_history)
+    ctde_action_history = jnp.einsum("ij...,ej...->ei...", action_mask, action_history)
+
+    return JointTrajectory(
+        observations=ctde_obs_history,
+        actions=ctde_action_history,
+    )
+
+
+def update_eval_trajectory_history(
+    traj_history: Optional[Dict],
+    observation: Union["Observation", "ObservationGlobalState"],
+    action: chex.Array,
+    config: DictConfig,
+) -> Dict:
+    """Update trajectory history for evaluation, maintaining CTDE constraints."""
+
+    traj_len = config.system.get("traj_len", 10)
+    n_envs = observation.agents_view.shape[0]
+    n_agents = observation.agents_view.shape[1]
+    obs_shape = observation.agents_view.shape[2:]
+
+    if traj_history is None:
+        # Initialize history with current observation/action
+        obs_history = jnp.zeros((n_envs, n_agents, traj_len, *obs_shape))
+
+        # Determine action history shape from actual action
+        if len(action.shape) == 2:
+            # Discrete actions: (n_envs, n_agents)
+            action_history = jnp.zeros((n_envs, n_agents, traj_len))
+        else:
+            # Continuous actions: (n_envs, n_agents, action_dim)
+            action_dim = action.shape[2]
+            action_history = jnp.zeros((n_envs, n_agents, traj_len, action_dim))
+
+        # Set the last position to current observation/action
+        obs_history = obs_history.at[:, :, -1].set(observation.agents_view)
+        action_history = action_history.at[:, :, -1].set(action)
+    else:
+        obs_history = traj_history["obs_history"]
+        action_history = traj_history["action_history"]
+
+        # Shift history and add new data
+        obs_history = jnp.roll(obs_history, -1, axis=2)
+        action_history = jnp.roll(action_history, -1, axis=2)
+
+        # Add current observation/action to the last position
+        obs_history = obs_history.at[:, :, -1].set(observation.agents_view)
+        action_history = action_history.at[:, :, -1].set(action)
+
+    return {
+        "obs_history": obs_history,
+        "action_history": action_history,
+    }
 
 
 def get_sebulba_eval_fn(
@@ -322,3 +465,78 @@ def get_sebulba_eval_fn(
         return metrics
 
     return timed_eval_fn, env
+
+
+def get_eval_fn_with_traj(
+    env: "MarlEnv", act_fn: EvalActFn, config: DictConfig, absolute_metric: bool
+) -> "EvalFn":
+    """Creates a function that can be used to evaluate agents on a given environment with trajectory support.
+
+    This version maintains trajectory history during evaluation while respecting CTDE constraints.
+    """
+    import time
+
+    from jax import tree
+
+    n_devices = config.arch.get("n_devices", 1)
+    eval_episodes = (
+        config.arch.num_absolute_metric_eval_episodes
+        if absolute_metric
+        else config.arch.num_eval_episodes
+    )
+
+    episode_loops = int(eval_episodes // (config.arch.num_envs * n_devices))
+    n_vmapped_envs = config.arch.num_envs
+
+    # Create named tuple for eval state that includes trajectory history
+    _EvalEnvStepState = tuple[Any, Any, Any, ActorState]
+
+    def eval_fn(params: FrozenDict, key: PRNGKey, init_act_state: ActorState) -> "Metrics":
+        """Evaluates the given params on an environment and returns relevant metrics."""
+
+        def _env_step(eval_state: _EvalEnvStepState, _: Any) -> Tuple[_EvalEnvStepState, Any]:
+            """Performs a single environment step with trajectory tracking"""
+            env_state, ts, key, actor_state = eval_state
+
+            key, act_key = jax.random.split(key)
+            action, actor_state = act_fn(params, ts, act_key, actor_state)
+            env_state, ts = jax.vmap(env.step)(env_state, action)
+
+            return (env_state, ts, key, actor_state), ts
+
+        def _episode(key: PRNGKey, _: Any) -> Tuple[PRNGKey, "Metrics"]:
+            """Simulates `num_envs` episodes with trajectory tracking."""
+            key, reset_key = jax.random.split(key)
+            reset_keys = jax.random.split(reset_key, n_vmapped_envs)
+            env_state, ts = jax.vmap(env.reset)(reset_keys)
+
+            step_state = env_state, ts, key, init_act_state
+            _, timesteps = jax.lax.scan(_env_step, step_state, jnp.arange(env.time_limit + 1))
+
+            metrics = timesteps.extras["episode_metrics"] | timesteps.extras["env_metrics"]
+
+            # find the first instance of done to get the metrics at that timestep
+            done_idx = jnp.argmax(timesteps.last(), axis=0)
+            metrics = tree.map(lambda m: m[done_idx, jnp.arange(n_vmapped_envs)], metrics)
+
+            return key, metrics
+
+        _, metrics = jax.lax.scan(_episode, key, xs=None, length=episode_loops)
+        metrics = tree.map(lambda x: x.reshape(-1), metrics)  # flatten metrics
+        return metrics
+
+    def timed_eval_fn(params: FrozenDict, key: PRNGKey, init_act_state: ActorState) -> "Metrics":
+        """Wrapper around eval function to time it and add in steps per second metric."""
+        start_time = time.time()
+
+        # Map evaluation function over specified devices
+        devices = jax.local_devices()[:n_devices]
+        metrics = jax.pmap(eval_fn, devices=devices)(params, key, init_act_state)
+        metrics = jax.block_until_ready(metrics)
+
+        end_time = time.time()
+        total_timesteps = jnp.sum(metrics["episode_length"])
+        metrics["steps_per_second"] = total_timesteps / (end_time - start_time)
+        return metrics
+
+    return timed_eval_fn

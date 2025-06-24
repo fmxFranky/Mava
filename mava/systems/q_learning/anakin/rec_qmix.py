@@ -26,12 +26,14 @@ import optax
 from colorama import Fore, Style
 from flashbax.buffers.flat_buffer import TrajectoryBuffer
 from flax.core.scope import FrozenVariableDict
-from flax.linen import FrozenDict
 from jax import Array, tree
-from jumanji.types import TimeStep
 from omegaconf import DictConfig, OmegaConf
 
-from mava.evaluator import ActorState, get_eval_fn, get_num_eval_envs
+from mava.evaluator import (
+    get_eval_fn_with_traj,
+    get_num_eval_envs,
+    make_rec_eval_act_fn_with_traj,
+)
 from mava.networks import RecQNetwork, ScannedRNN
 from mava.networks.base import QMixingNetwork
 from mava.systems.q_learning.types import (
@@ -44,7 +46,7 @@ from mava.systems.q_learning.types import (
     TrajectoryState,
     Transition,
 )
-from mava.types import IndividualTrajectory, JointTrajectory, MarlEnv, MavaObservation
+from mava.types import JointTrajectory, MarlEnv, MavaObservation
 from mava.utils import make_env as environments
 from mava.utils.checkpointing import Checkpointer
 from mava.utils.config import check_total_timesteps
@@ -293,33 +295,24 @@ def make_update_fns(
             buffer_full=new_buffer_full,
         )
 
-    def construct_trajectories(
-        trajectory_state: TrajectoryState, current_obs: MavaObservation, agent_idx: int = 0
-    ) -> Tuple[IndividualTrajectory, JointTrajectory]:
-        """Construct individual and joint trajectories from trajectory state."""
+    def construct_trajectories(trajectory_state: TrajectoryState) -> JointTrajectory:
+        """Construct joint trajectory from trajectory state."""
         # Data is maintained as a shift-based history of fixed length K
         obs_history = trajectory_state.obs_history  # [B, N, K, *obs_dim]
         action_history = trajectory_state.action_history  # [B, N, K]
-
-        # Construct individual trajectory for specific agent
-        individual_traj = IndividualTrajectory(
-            observations=obs_history[:, agent_idx],  # [B, K, *obs_dim]
-            actions=action_history[:, agent_idx],  # [B, K]
-        )
 
         # Construct joint trajectory for all agents
         joint_traj = JointTrajectory(
             observations=obs_history,  # [B, N, K, *obs_dim]
             actions=action_history,  # [B, N, K]
         )
-        return individual_traj, joint_traj
+        return joint_traj
 
     def select_eps_greedy_action(
         action_selection_state: ActionSelectionState,
         obs: MavaObservation,
         term_or_trunc: Array,
         trajectory_state: TrajectoryState,
-        agent_idx: int = 0,
     ) -> Tuple[ActionSelectionState, Array]:
         """Select action to take in eps-greedy way. Batch and agent dims are included."""
 
@@ -332,21 +325,17 @@ def make_update_fns(
         obs = tree.map(lambda x: x[jnp.newaxis, ...], obs)
         term_or_trunc = tree.map(lambda x: x[jnp.newaxis, ...], term_or_trunc)
 
-        # Construct individual and joint trajectories
-        individual_traj, joint_traj = construct_trajectories(trajectory_state, obs[0], agent_idx)
+        # Construct joint trajectory
+        joint_traj = construct_trajectories(trajectory_state)
 
-        # Add batch dimension to trajectories to match network input format
-        individual_traj = IndividualTrajectory(
-            observations=individual_traj.observations[jnp.newaxis, ...],
-            actions=individual_traj.actions[jnp.newaxis, ...],
-        )
+        # Add batch dimension to trajectory to match network input format
         joint_traj = JointTrajectory(
             observations=joint_traj.observations[jnp.newaxis, ...],
             actions=joint_traj.actions[jnp.newaxis, ...],
         )
 
         next_hidden_state, eps_greedy_dist = q_net.apply(
-            params, hidden_state, (obs, term_or_trunc), eps, individual_traj, joint_traj
+            params, hidden_state, (obs, term_or_trunc), eps, joint_traj
         )
 
         new_key, explore_key = jax.random.split(key, 2)
@@ -437,9 +426,9 @@ def make_update_fns(
         hidden_state, obs_term_or_trunc = prep_inputs_to_scannedrnn(obs, term_or_trunc)
 
         # Get online q values of all actions
-        # TODO: Add trajectory information to q_loss_fn as well, currently using None
+        # Note: During training, trajectory information is not available from replay buffer
         _, q_online = q_net.apply(
-            q_online_params, hidden_state, obs_term_or_trunc, None, None, method="get_q_values"
+            q_online_params, hidden_state, obs_term_or_trunc, None, method="get_q_values"
         )
         q_online = switch_leading_axes(q_online)  # (T, B, ...) -> (B, T, ...)
         # Get the q values of the taken actions and remove extra dim
@@ -483,9 +472,9 @@ def make_update_fns(
             data_full.obs, data_full.term_or_trunc
         )  # (T, B, ...)
 
-        # TODO: Add trajectory information to training as well, currently using None
+        # Note: During training, trajectory information is not available from replay buffer
         _, next_greedy_dist = q_net.apply(
-            params.online, hidden_state, next_obs_term_or_trunc, 0.0, None, None
+            params.online, hidden_state, next_obs_term_or_trunc, 0.0, None
         )
         next_action = next_greedy_dist.mode()  # (T, B, ...)
         next_action = switch_leading_axes(next_action)  # (T, B, ...) -> (B, T, ...)
@@ -496,7 +485,7 @@ def make_update_fns(
         )  # (T, B, ...)
 
         _, next_q_vals_target = q_net.apply(
-            params.target, hidden_state, next_obs_term_or_trunc, None, None, method="get_q_values"
+            params.target, hidden_state, next_obs_term_or_trunc, None, method="get_q_values"
         )
         next_q_vals_target = switch_leading_axes(next_q_vals_target)  # (T, B, ...) -> (B, T, ...)
         next_q_vals_target = next_q_vals_target[:, 1:, ...]  # (B, T, ...)
@@ -685,26 +674,15 @@ def run_experiment(cfg: DictConfig) -> float:
 
     key, eval_key = jax.random.split(key)
 
-    def eval_act_fn(
-        params: FrozenDict, timestep: TimeStep, key: chex.PRNGKey, actor_state: ActorState
-    ) -> Tuple[chex.Array, ActorState]:
-        """The acting function that get's passed to the evaluator.
-        A custom function is needed for epsilon-greedy acting.
-        """
-        hidden_state = actor_state["hidden_state"]
+    # Use the trajectory-aware evaluation function
+    eval_act_fn = make_rec_eval_act_fn_with_traj(
+        lambda params, hidden_state, net_input, joint_traj: q_net.apply(
+            params, hidden_state, net_input, 0.0, joint_traj
+        ),
+        cfg,
+    )
 
-        term_or_trunc = timestep.last()
-        net_input = (timestep.observation, term_or_trunc[..., jnp.newaxis])
-        net_input = tree.map(lambda x: x[jnp.newaxis], net_input)  # add batch dim to obs
-
-        # TODO: For evaluation, we don't have trajectory history, so pass None
-        next_hidden_state, eps_greedy_dist = q_net.apply(
-            params, hidden_state, net_input, 0.0, None, None
-        )
-        action = eps_greedy_dist.sample(seed=key).squeeze(0)
-        return action, {"hidden_state": next_hidden_state}
-
-    evaluator = get_eval_fn(eval_env, eval_act_fn, cfg, absolute_metric=False)
+    evaluator = get_eval_fn_with_traj(eval_env, eval_act_fn, cfg, absolute_metric=False)
 
     if cfg.logger.checkpointing.save_model:
         checkpointer = Checkpointer(
@@ -713,13 +691,36 @@ def run_experiment(cfg: DictConfig) -> float:
             **cfg.logger.checkpointing.save_args,  # Checkpoint args
         )
 
-    # Create an initial hidden state used for resetting memory for evaluation
+    # Create an initial hidden state and trajectory history used for resetting memory for evaluation
     eval_batch_size = get_num_eval_envs(cfg, absolute_metric=False)
     # Initialize evaluation hidden state for specified number of devices
     eval_hs = ScannedRNN.initialize_carry(
         (cfg.arch.n_devices, eval_batch_size, cfg.system.num_agents),
         cfg.network.hidden_state_dim,
     )
+
+    # Initialize trajectory history for evaluation
+    traj_len = getattr(cfg.system, "traj_len", 10)
+    sample_obs = env.observation_spec.generate_value()
+    obs_shape = (
+        sample_obs.agents_view.shape[1:]
+        if hasattr(sample_obs, "agents_view")
+        else sample_obs.shape[1:]
+    )
+    sample_action = env.action_spec.generate_value()
+    action_shape = sample_action.shape[1:]
+    action_dtype = jnp.array(sample_action).dtype
+
+    # Initialize empty trajectory history for evaluation
+    eval_traj_history = {
+        "obs_history": jnp.zeros(
+            (cfg.arch.n_devices, eval_batch_size, cfg.system.num_agents, traj_len, *obs_shape)
+        ),
+        "action_history": jnp.zeros(
+            (cfg.arch.n_devices, eval_batch_size, cfg.system.num_agents, traj_len, *action_shape),
+            dtype=action_dtype,
+        ),
+    }
 
     max_episode_return = -jnp.inf
     best_params = copy.deepcopy(unreplicate_batch_dim(learner_state.params.online))
@@ -750,7 +751,11 @@ def run_experiment(cfg: DictConfig) -> float:
         key, eval_key = jax.random.split(key)
         eval_keys = jax.random.split(eval_key, cfg.arch.n_devices)
         eval_params = unreplicate_batch_dim(learner_state.params.online)
-        eval_metrics = evaluator(eval_params, eval_keys, {"hidden_state": eval_hs})
+        eval_metrics = evaluator(
+            eval_params,
+            eval_keys,
+            {"hidden_state": eval_hs, "trajectory_history": eval_traj_history},
+        )
         jax.block_until_ready(eval_metrics)
         logger.log(eval_metrics, t, eval_idx, LogEvent.EVAL)
         episode_return = jnp.mean(eval_metrics["episode_return"])
@@ -782,8 +787,31 @@ def run_experiment(cfg: DictConfig) -> float:
             cfg.network.hidden_state_dim,
         )
 
-        abs_metric_evaluator = get_eval_fn(eval_env, eval_act_fn, cfg, absolute_metric=True)
-        eval_metrics = abs_metric_evaluator(best_params, eval_keys, {"hidden_state": eval_hs})
+        # Initialize trajectory history for absolute metric evaluation
+        eval_traj_history_abs = {
+            "obs_history": jnp.zeros(
+                (cfg.arch.n_devices, eval_batch_size, cfg.system.num_agents, traj_len, *obs_shape)
+            ),
+            "action_history": jnp.zeros(
+                (
+                    cfg.arch.n_devices,
+                    eval_batch_size,
+                    cfg.system.num_agents,
+                    traj_len,
+                    *action_shape,
+                ),
+                dtype=action_dtype,
+            ),
+        }
+
+        abs_metric_evaluator = get_eval_fn_with_traj(
+            eval_env, eval_act_fn, cfg, absolute_metric=True
+        )
+        eval_metrics = abs_metric_evaluator(
+            best_params,
+            eval_keys,
+            {"hidden_state": eval_hs, "trajectory_history": eval_traj_history_abs},
+        )
         logger.log(eval_metrics, t, eval_idx, LogEvent.ABSOLUTE)
 
     logger.stop()

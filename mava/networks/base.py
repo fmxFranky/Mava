@@ -25,7 +25,7 @@ from flax.linen.initializers import orthogonal
 from mava.networks.distributions import MaskedEpsGreedyDistribution
 from mava.networks.torsos import MLPTorso
 from mava.types import (
-    Done,
+    JointTrajectory,
     Observation,
     ObservationGlobalState,
     RNNGlobalObservation,
@@ -33,7 +33,7 @@ from mava.types import (
 )
 
 if TYPE_CHECKING:
-    from mava.types import IndividualTrajectory, JointTrajectory
+    from mava.types import JointTrajectory
 
 
 class FeedForwardActor(nn.Module):
@@ -149,15 +149,13 @@ class RecurrentActor(nn.Module):
         self,
         policy_hidden_state: chex.Array,
         observation_done: RNNObservation,
-        individual_trajectory: Optional["IndividualTrajectory"] = None,
         joint_trajectory: Optional["JointTrajectory"] = None,
     ) -> Tuple[chex.Array, tfd.Distribution]:
         """Forward pass."""
         observation, done = observation_done
 
-        # TODO: Process individual_trajectory and joint_trajectory for enhanced policy computation
-        # Currently these trajectories are passed but not used in the computation
-        # individual_trajectory contains: observations [B, K, *obs_dim], actions [B, K, *act_dim]
+        # TODO: Process joint_trajectory for enhanced policy computation
+        # Currently joint_trajectory is passed but not used in the computation
         # joint_trajectory contains: observations [B, N, K, *obs_dim], actions [B, N, K, *act_dim]
         # The last timestep observation in trajectories should match current observation.agents_view
 
@@ -186,15 +184,13 @@ class RecurrentValueNet(nn.Module):
         self,
         value_net_hidden_state: Tuple[chex.Array, chex.Array],
         observation_done: Union[RNNObservation, RNNGlobalObservation],
-        individual_trajectory: Optional["IndividualTrajectory"] = None,
         joint_trajectory: Optional["JointTrajectory"] = None,
     ) -> Tuple[chex.Array, chex.Array]:
         """Forward pass."""
         observation, done = observation_done
 
-        # TODO: Process individual_trajectory and joint_trajectory for enhanced value computation
-        # Currently these trajectories are passed but not used in the computation
-        # individual_trajectory contains: observations [B, K, *obs_dim], actions [B, K, *act_dim]
+        # TODO: Process joint_trajectory for enhanced value computation
+        # Currently joint_trajectory is passed but not used in the computation
         # joint_trajectory contains: observations [B, N, K, *obs_dim], actions [B, N, K, *act_dim]
 
         if self.centralised_critic:
@@ -231,15 +227,13 @@ class RecQNetwork(nn.Module):
         self,
         hidden_state: chex.Array,
         observations_resets: RNNObservation,
-        individual_trajectory: Optional["IndividualTrajectory"] = None,
         joint_trajectory: Optional["JointTrajectory"] = None,
     ) -> chex.Array:
         """Forward pass to obtain q values."""
         obs, resets = observations_resets
 
-        # TODO: Process individual_trajectory and joint_trajectory for enhanced Q-value computation
-        # Currently these trajectories are passed but not used in the computation
-        # individual_trajectory contains: observations [B, K, *obs_dim], actions [B, K, *act_dim]
+        # TODO: Process joint_trajectory for enhanced Q-value computation
+        # Currently joint_trajectory is passed but not used in the computation
         # joint_trajectory contains: observations [B, N, K, *obs_dim], actions [B, N, K, *act_dim]
         # The last timestep observation in trajectories should match current obs.agents_view
 
@@ -259,7 +253,6 @@ class RecQNetwork(nn.Module):
         hidden_state: chex.Array,
         observations_resets: RNNObservation,
         eps: float = 0,
-        individual_trajectory: Optional["IndividualTrajectory"] = None,
         joint_trajectory: Optional["JointTrajectory"] = None,
     ) -> chex.Array:
         """Forward pass with additional construction of epsilon-greedy distribution.
@@ -267,7 +260,7 @@ class RecQNetwork(nn.Module):
         """
         obs, _ = observations_resets
         hidden_state, q_values = self.get_q_values(
-            hidden_state, observations_resets, individual_trajectory, joint_trajectory
+            hidden_state, observations_resets, joint_trajectory
         )
         eps_greedy_dist = MaskedEpsGreedyDistribution(q_values, eps, obs.action_mask)
 

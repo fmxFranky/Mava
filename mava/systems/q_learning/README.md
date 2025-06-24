@@ -12,12 +12,10 @@ This directory contains implementations of Q-learning algorithms for multi-agent
 - **File**: `anakin/rec_qmix.py` 
 - **Description**: QMIX algorithm with recurrent networks for value decomposition in cooperative settings
 
-#### Enhanced Trajectory Support (NEW)
+#### Enhanced Trajectory Support
 
-The recurrent QMIX implementation now supports enhanced trajectory inputs to the actor network:
+The recurrent QMIX implementation now supports enhanced trajectory inputs to the Q-network:
 
-- **Individual Trajectory**: Historical observations and actions for the current agent
-  - Format: `observations: [B, K, *obs_dim]`, `actions: [B, K, *act_dim]`
 - **Joint Trajectory**: Historical observations and actions for all agents  
   - Format: `observations: [B, N, K, *obs_dim]`, `actions: [B, N, K, *act_dim]`
 
@@ -33,11 +31,11 @@ system:
 ```
 
 **Current Status**: 
-- ✅ Trajectory data is properly constructed and passed to the network
-- ⚠️ TODO: The network currently receives but does not use the trajectory information
-- ⚠️ TODO: Training procedures also need trajectory integration
+- ✅ Trajectory data is properly constructed and passed to the network during action selection
+- ✅ Network interface updated to accept joint trajectory input
+- ⚠️ Note: During training from replay buffer, trajectory information is not available
 
-**Usage**: The trajectories contain observations from timesteps `t-K:t` and actions from timesteps `t-K-1:t-1`, ensuring the last observation in the trajectory matches the current network input.
+**Usage**: The trajectories contain observations and actions from timesteps `t-K+1:t`, ensuring proper temporal ordering for recurrent processing.
 
 ## Configuration
 
