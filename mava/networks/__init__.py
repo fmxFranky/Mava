@@ -23,4 +23,5 @@ from mava.networks.base import (
     ScannedRNN,
 )
 from mava.networks.rec_mat_network import MATHiddenStates, RecurrentMultiAgentTransformer
+from mava.networks.s2mp_network import S2MPNetwork
 from mava.networks.sable_network import SableNetwork

@@ -380,7 +380,7 @@ def learner_setup(
         jnp.stack(env_keys),
     )
     reshape_states = lambda x: x.reshape(
-        (n_devices, config.system.update_batch_size, config.arch.num_envs) + x.shape[1:]
+        (n_devices, config.system.update_batch_size, config.arch.num_envs, *x.shape[1:])
     )
     # (devices, update batch size, num_envs, ...)
     env_states = tree.map(reshape_states, env_states)

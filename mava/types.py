@@ -184,6 +184,10 @@ SebulbaLearnerFn = Callable[[MavaState, MavaTransition], Tuple[MavaState, Metric
 ActorApply = Callable[[FrozenDict, Observation], Distribution]
 CriticApply = Callable[[FrozenDict, Observation], Value]
 RecActorApply = Callable[
-    [FrozenDict, HiddenState, RNNObservation, Optional["JointTrajectory"]], Tuple[HiddenState, Distribution]
+    [FrozenDict, HiddenState, RNNObservation, Optional["JointTrajectory"]],
+    Tuple[HiddenState, Distribution],
 ]
-RecCriticApply = Callable[[FrozenDict, HiddenState, RNNObservation, Optional["JointTrajectory"]], Tuple[HiddenState, Value]]
+RecCriticApply = Callable[
+    [FrozenDict, HiddenState, RNNObservation, Optional["JointTrajectory"]],
+    Tuple[HiddenState, Value],
+]

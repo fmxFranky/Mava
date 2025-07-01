@@ -44,7 +44,7 @@ def discrete_parallel_act_with_hidden(
     shifted_action = jnp.zeros((B, N, action_dim + 1))  # (B, N, A +1)
     shifted_action = shifted_action.at[:, 0, 0].set(1)
     shifted_action = shifted_action.at[:, 1:, 1:].set(one_hot_action[:, :-1, :])
-    
+
     logit, _ = decoder(shifted_action, obs_rep, hidden_states)  # (B, N, A)
 
     masked_logits = jnp.where(
@@ -105,11 +105,11 @@ def discrete_autoregressive_act_with_hidden(
     output_action_log = jnp.zeros_like(output_action)
 
     current_hidden_states = hidden_states
-    
+
     for i in range(N):
         logit, current_hidden_states = decoder(shifted_action, obs_rep, current_hidden_states)
         logit_i = logit[:, i, :]  # (B, A)
-        
+
         masked_logits = jnp.where(
             legal_actions[:, i, :],
             logit_i,
@@ -148,11 +148,11 @@ def continuous_autoregressive_act_with_hidden(
     output_action_log = jnp.zeros((B, N))
 
     current_hidden_states = hidden_states
-    
+
     for i in range(N):
         act_mean, current_hidden_states = decoder(shifted_action, obs_rep, current_hidden_states)
         act_mean_i = act_mean[:, i, :]  # (B, A)
-        
+
         action_std = jax.nn.softplus(decoder.log_std)
 
         distribution = tfd.Normal(loc=act_mean_i, scale=action_std)
@@ -160,7 +160,7 @@ def continuous_autoregressive_act_with_hidden(
             TanhTransformedDistribution(distribution),
             reinterpreted_batch_ndims=1,
         )
-        
+
         key, sample_key = jax.random.split(key)
         action = distribution.sample(seed=sample_key)  # (B, A)
         action_log = distribution.log_prob(action)  # (B, )
@@ -171,4 +171,4 @@ def continuous_autoregressive_act_with_hidden(
         # Set the action for the next step
         shifted_action = shifted_action.at[:, i + 1, :].set(action, mode="drop")
 
-    return output_action, output_action_log  # (B, N, A), (B, N) 
+    return output_action, output_action_log  # (B, N, A), (B, N)

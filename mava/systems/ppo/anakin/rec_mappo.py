@@ -801,6 +801,13 @@ def run_experiment(_config: DictConfig) -> float:
             if hasattr(sample_obs, "agents_view")
             else sample_obs.shape[1:]
         )
+        
+        # Get global state shape
+        global_state_shape = (
+            sample_obs.global_state.shape
+            if hasattr(sample_obs, "global_state")
+            else (1,)  # fallback if no global state
+        )
 
         # Get action spec to determine correct action shape and dtype
         sample_action = env.action_spec.generate_value()
@@ -816,6 +823,7 @@ def run_experiment(_config: DictConfig) -> float:
                 (config.system.num_agents, *obs_shape),
                 dtype=jnp.float32,
             ),
+            "global_state": jnp.zeros(global_state_shape, dtype=jnp.float32),
             "legal_action_mask": jnp.zeros(
                 (config.system.num_agents, env.action_dim),
                 dtype=bool,
@@ -900,7 +908,7 @@ def run_experiment(_config: DictConfig) -> float:
 
         # Record data into the vault if enabled
         if save_vault:
-            # Pack transition (avoiding individual_trajectory and joint_trajectory)
+            # Pack transition
             flashbax_transition = _reshape_experience(
                 {
                     # (D, NU, UB, T, NE, ...)
@@ -908,6 +916,7 @@ def run_experiment(_config: DictConfig) -> float:
                     "action": experience_to_store.action,
                     "reward": experience_to_store.reward,
                     "observation": experience_to_store.obs.agents_view,
+                    "global_state": experience_to_store.obs.global_state,
                     "legal_action_mask": experience_to_store.obs.action_mask,
                 }
             )
