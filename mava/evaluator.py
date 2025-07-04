@@ -214,7 +214,13 @@ def make_rec_eval_act_fn(actor_apply_fn: RecActorApply, config: DictConfig) -> E
     return eval_act_fn
 
 
-def make_rec_eval_act_fn_with_traj(actor_apply_fn: RecActorApply, config: DictConfig) -> EvalActFn:
+def make_rec_eval_act_fn_with_traj(
+    actor_apply_fn: RecActorApply,
+    config: DictConfig,
+    is_happo: bool = False,
+    action_type: str = None,
+    action_dim: int = None,
+) -> EvalActFn:
     """Makes an act function that conforms to the evaluator API given a standard
     recurrent mava actor network with trajectory support.
 
@@ -231,26 +237,57 @@ def make_rec_eval_act_fn_with_traj(actor_apply_fn: RecActorApply, config: DictCo
         hidden_state = actor_state[_hidden_state]
         traj_history = actor_state.get(_trajectory_history, None)
 
+        n_envs = timestep.observation.agents_view.shape[0]
         n_agents = timestep.observation.agents_view.shape[1]
         last_done = timestep.last()[:, jnp.newaxis].repeat(n_agents, axis=-1)
         ac_in = (timestep.observation, last_done)
         ac_in = tree.map(lambda x: x[jnp.newaxis], ac_in)  # add batch dim to obs
 
-        # Construct CTDE-compliant joint trajectory
-        joint_traj = construct_ctde_joint_trajectory(timestep.observation, traj_history, config)
-
-        hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, joint_traj)
-        action = pi.mode() if config.arch.evaluation_greedy else pi.sample(seed=key)
-
-        # Update trajectory history for next step
-        new_traj_history = update_eval_trajectory_history(
-            traj_history, timestep.observation, action.squeeze(0), config
-        )
-
-        return action.squeeze(0), {
-            _hidden_state: hidden_state,
-            _trajectory_history: new_traj_history,
-        }
+        if is_happo:
+            # Allocate action tensor based on declared action_type and action_dim
+            if action_type == "discrete":
+                action = jnp.zeros((1, n_envs, n_agents), dtype=jnp.int32)
+            else:
+                # continuous or vector
+                action = jnp.zeros((1, n_envs, n_agents, action_dim), dtype=jnp.float32)
+            # Initialize new hidden state
+            new_hidden_state = jnp.zeros_like(hidden_state, dtype=jnp.float32)
+            for agent in range(n_agents):
+                key, policy_key = jax.random.split(key)
+                single_agent_ac_in = tree.map(lambda x, agent=agent: x[:, :, agent], ac_in)
+                agent_params = tree.map(lambda x, agent=agent: x[agent], params)
+                agent_hstates = tree.map(lambda x, agent=agent: x[:, agent, :], hidden_state)
+                # Run the network for this agent
+                agent_policy_hidden_state, agent_actor_policy = actor_apply_fn(
+                    agent_params, agent_hstates, single_agent_ac_in, None
+                )
+                new_hidden_state = new_hidden_state.at[:, agent].set(agent_policy_hidden_state)
+                # Select action
+                if config.arch.evaluation_greedy:
+                    action_per_agent = agent_actor_policy.mode()
+                else:
+                    action_per_agent = agent_actor_policy.sample(seed=policy_key)
+                action = action.at[:, :, agent].set(action_per_agent.squeeze(0))
+            # Update trajectory history
+            new_traj_history = update_eval_trajectory_history(
+                traj_history, timestep.observation, action.squeeze(0), config
+            )
+            return action.squeeze(0), {
+                _hidden_state: new_hidden_state,
+                _trajectory_history: new_traj_history,
+            }
+        else:
+            # standard CTDE evaluation
+            joint_traj = construct_ctde_joint_trajectory(timestep.observation, traj_history, config)
+            hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, joint_traj)
+            action = pi.mode() if config.arch.evaluation_greedy else pi.sample(seed=key)
+            new_traj_history = update_eval_trajectory_history(
+                traj_history, timestep.observation, action.squeeze(0), config
+            )
+            return action.squeeze(0), {
+                _hidden_state: hidden_state,
+                _trajectory_history: new_traj_history,
+            }
 
     return eval_act_fn
 

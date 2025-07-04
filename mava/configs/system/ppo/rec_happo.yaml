@@ -1,0 +1,41 @@
+# --- Defaults REC-HAPPO ---
+total_timesteps: ~ # Set the total environment steps.
+# If unspecified, it's derived from num_updates; otherwise, num_updates adjusts based on this value.
+num_updates: 244 # Number of updates
+seed: 42
+
+# --- Agent observations ---
+add_agent_id: True
+
+# --- RL hyperparameters ---
+actor_lr: 5e-4 # Learning rate for actor network
+critic_lr: 2.5e-4 # Learning rate for critic network
+update_batch_size: 2 # Number of vectorised gradient updates per device.
+rollout_length: 128 # Number of environment steps per vectorised environment.
+ppo_epochs: 8 # Number of ppo epochs per training data batch.
+num_minibatches: 2 # Number of minibatches per ppo epoch.
+gamma: 0.99 # Discounting factor.
+gae_lambda: 0.95 # Lambda value for GAE computation.
+clip_eps: 0.2 # Clipping value for PPO updates and value function.
+ent_coef: 0.01 # Entropy regularisation term for loss function.
+vf_coef: 1.0 # Critic weight in
+max_grad_norm: 10.0 # Maximum norm of the gradients for a weight update.
+decay_learning_rates: False # Whether learning rates should be linearly decayed during training.
+
+# --- Trajectory parameters ---
+traj_len: 10 # Length of trajectory history to maintain for each agent
+
+# --- Recurrent hyperparameters ---
+recurrent_chunk_size: ~ # The size of the chunks in which the recurrent sequences are divided during the training process.
+# If unspecified, the rollout length is used as the chunk size which means that the recurrent sequences are not divided.
+
+# --- HAPPO specific parameters ---
+# HAPPO uses per-agent parameters and per-agent training
+# The centralized critic is shared while each actor has its own parameters
+# Per-agent parameter updates with shuffled training order
+
+# --- Vault settings for experience storage ---
+save_vault: False # Whether to save experience data to vault
+vault_name: "rec_happo" # Name of the vault for experience storage
+vault_uid: ~ # Unique identifier for vault. If unset, uses timestamp
+vault_save_interval: 5 # How often to save buffer to vault (in evaluation steps) 
