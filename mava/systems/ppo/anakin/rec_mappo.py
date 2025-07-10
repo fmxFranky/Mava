@@ -97,61 +97,51 @@ def update_trajectory_state(
     )
 
 
-def construct_joint_trajectory_host_in(
-    traj_batch: RNNPPOTransition, step_idx: int, config: DictConfig
+def construct_joint_trajectory_for_timestep(
+    traj_batch: RNNPPOTransition, timestep_idx: int, config: DictConfig
 ) -> JointTrajectory:
-    """Construct joint trajectory using efficient memory management to prevent OOM.
+    """Construct joint trajectory for a specific timestep with proper history.
 
-    This function builds trajectory data efficiently on device by using sliding windows
-    and minimal tensor operations to avoid large memory allocations that could cause
-    out-of-memory errors during training.
+    This function constructs the trajectory history for timestep_idx,
+    where the history includes [timestep_idx-traj_len+1, ..., timestep_idx].
     """
-    # Extract observations and actions from trajectory batch
-    # traj_batch.obs: [T, B, N, *obs_dim] - observations over time
-    # traj_batch.action: [T, B, N] - actions over time
+    traj_len = config.system.get("traj_len", 5)
+    T, B, N = traj_batch.obs.agents_view.shape[:3]
+    obs_shape = traj_batch.obs.agents_view.shape[3:]
 
-    traj_len = config.system.get("traj_len", 10)
-    batch_size = traj_batch.obs.agents_view.shape[1]
-    num_agents = traj_batch.obs.agents_view.shape[2]
+    # For timestep_idx, we want history [timestep_idx-traj_len+1, ..., timestep_idx]
+    start_idx = max(0, timestep_idx - traj_len + 1)
+    end_idx = timestep_idx + 1
 
-    # Build on host to prevent OOM
-    obs_shape = traj_batch.obs.agents_view.shape[3:]  # Get observation dimensions
-    action_shape = traj_batch.action.shape[3:] if len(traj_batch.action.shape) > 3 else ()
-
-    # Create host-side trajectory using recent history from traj_batch
-    # Use the most recent traj_len steps from the batch
-    start_idx = max(0, step_idx - traj_len + 1)
-    end_idx = step_idx + 1
-
-    # Extract relevant time slice and pad if necessary
+    # Extract the available history
     obs_slice = traj_batch.obs.agents_view[start_idx:end_idx]  # [actual_len, B, N, *obs_dim]
-    action_slice = traj_batch.action[start_idx:end_idx]  # [actual_len, B, N, *action_dim]
+    action_slice = traj_batch.action[start_idx:end_idx]  # [actual_len, B, N] or [actual_len, B]
 
     actual_len = obs_slice.shape[0]
 
-    # Pad with zeros if we don't have enough history
+    # Handle action dimensions - expand if needed
+    if action_slice.ndim == 2:  # [actual_len, B] -> expand to [actual_len, B, N]
+        action_slice = jnp.broadcast_to(action_slice[:, :, jnp.newaxis], (actual_len, B, N))
+
+    # Pad if necessary (when timestep_idx < traj_len-1)
     if actual_len < traj_len:
         pad_len = traj_len - actual_len
-        obs_pad = jnp.zeros((pad_len, batch_size, num_agents, *obs_shape))
-        action_pad = jnp.zeros((pad_len, batch_size, num_agents, *action_shape))
+        obs_pad = jnp.zeros((pad_len, B, N, *obs_shape))
+        action_pad = jnp.zeros((pad_len, B, N), dtype=action_slice.dtype)
 
-        obs_history = jnp.concatenate([obs_pad, obs_slice], axis=0)  # [traj_len, B, N, *obs_dim]
-        action_history = jnp.concatenate(
-            [action_pad, action_slice], axis=0
-        )  # [traj_len, B, N, *action_dim]
+        obs_hist = jnp.concatenate([obs_pad, obs_slice], axis=0)  # [traj_len, B, N, *obs_dim]
+        action_hist = jnp.concatenate([action_pad, action_slice], axis=0)  # [traj_len, B, N]
     else:
-        obs_history = obs_slice[-traj_len:]  # Take last traj_len steps
-        action_history = action_slice[-traj_len:]
+        obs_hist = obs_slice[-traj_len:]  # Take last traj_len steps
+        action_hist = action_slice[-traj_len:]
 
-    # Transpose to match expected format: [B, N, traj_len, *dims]
-    obs_history = jnp.transpose(obs_history, (1, 2, 0) + tuple(range(3, len(obs_history.shape))))
-    action_history = jnp.transpose(
-        action_history, (1, 2, 0) + tuple(range(3, len(action_history.shape)))
-    )
+    # Transpose to [B, N, traj_len, *dims] format expected by networks
+    obs_hist = obs_hist.transpose(1, 2, 0, *range(3, obs_hist.ndim))  # [B, N, traj_len, *obs_dim]
+    action_hist = action_hist.transpose(1, 2, 0)  # [B, N, traj_len]
 
     return JointTrajectory(
-        observations=obs_history,  # [B, N, traj_len, *obs_dim]
-        actions=action_history,  # [B, N, traj_len, *action_dim]
+        observations=obs_hist,  # [B, N, traj_len, *obs_dim]
+        actions=action_hist,  # [B, N, traj_len]
     )
 
 
@@ -267,10 +257,12 @@ def get_learner_fn(
         batched_last_observation = tree.map(lambda x: x[jnp.newaxis, :], last_timestep.observation)
         ac_in = (batched_last_observation, last_done[jnp.newaxis, :])
 
-        # Construct joint trajectory for last value computation using host-in approach
-        # Use the last timestep from trajectory batch for context
-        last_step_idx = config.system.rollout_length - 1
-        joint_traj_last = construct_joint_trajectory_host_in(traj_batch, last_step_idx, config)
+        # Construct joint trajectory for last value computation with proper per-timestep history
+        # Use the current trajectory_state which contains the latest history
+        joint_traj_last = JointTrajectory(
+            observations=trajectory_state.obs_history,  # [B, N, traj_len, *obs_dim]
+            actions=trajectory_state.action_history,  # [B, N, traj_len, *action_dim]
+        )
 
         # Run the network.
         _, last_val = critic_apply_fn(
@@ -302,16 +294,20 @@ def get_learner_fn(
                     # Rerun network
                     obs_and_done = (traj_batch.obs, traj_batch.done)
 
-                    # Construct joint trajectory using host-in approach
-                    # For training, we use the middle timestep as reference
-                    mid_step = config.system.recurrent_chunk_size // 2
-                    joint_traj = construct_joint_trajectory_host_in(traj_batch, mid_step, config)
+                    # Construct real joint trajectory for the last timestep in the sequence
+                    # This provides the most complete historical context for the network
+                    T = traj_batch.obs.agents_view.shape[0]  # sequence length
+                    last_timestep_idx = T - 1
+
+                    joint_traj = construct_joint_trajectory_for_timestep(
+                        traj_batch, last_timestep_idx, config
+                    )
 
                     _, actor_policy = actor_apply_fn(
                         actor_params,
                         traj_batch.hstates.policy_hidden_state[0],
                         obs_and_done,
-                        joint_traj,
+                        joint_traj,  # Real joint trajectory with proper historical context
                     )
                     log_prob = actor_policy.log_prob(traj_batch.action)
 
@@ -345,16 +341,20 @@ def get_learner_fn(
                     # Rerun network
                     obs_and_done = (traj_batch.obs, traj_batch.done)
 
-                    # Construct joint trajectory using host-in approach
-                    # For training, we use the middle timestep as reference
-                    mid_step = config.system.recurrent_chunk_size // 2
-                    joint_traj = construct_joint_trajectory_host_in(traj_batch, mid_step, config)
+                    # Construct real joint trajectory for the last timestep in the sequence
+                    # This provides the most complete historical context for the network
+                    T = traj_batch.obs.agents_view.shape[0]  # sequence length
+                    last_timestep_idx = T - 1
+
+                    joint_traj = construct_joint_trajectory_for_timestep(
+                        traj_batch, last_timestep_idx, config
+                    )
 
                     _, value = critic_apply_fn(
                         critic_params,
                         traj_batch.hstates.critic_hidden_state[0],
                         obs_and_done,
-                        joint_traj,
+                        joint_traj,  # Real joint trajectory with proper historical context
                     )
 
                     # Clipped MSE loss

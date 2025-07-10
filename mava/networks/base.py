@@ -178,15 +178,21 @@ class RecurrentActor(nn.Module):
     traj_len: int = 10  # Length of trajectory history K
     scan_fn: nn.Module = ScannedRNN
 
-    @nn.compact
+    def setup(self) -> None:
+        self.rnn = self.scan_fn(self.hidden_state_dim)
+
     def __call__(
         self,
-        policy_hidden_state: chex.Array,
+        policy_hidden_state: Union[chex.Array, Sequence[chex.Array]],
         observation_done: RNNObservation,
         joint_trajectory: Optional["JointTrajectory"] = None,
     ) -> Tuple[chex.Array, tfd.Distribution]:
         """Forward pass."""
         observation, done = observation_done
+
+        # Handle both single hidden state and list of hidden states for backward compatibility
+        if isinstance(policy_hidden_state, (list, tuple)):
+            policy_hidden_state = policy_hidden_state[0]
 
         # TODO: Process joint_trajectory for enhanced policy computation
         # Currently joint_trajectory is passed but not used in the computation
@@ -195,9 +201,33 @@ class RecurrentActor(nn.Module):
 
         policy_embedding = self.pre_torso(observation.agents_view)
         policy_rnn_input = (policy_embedding, done)
-        policy_hidden_state, policy_embedding = self.scan_fn(self.hidden_state_dim)(
-            policy_hidden_state, policy_rnn_input
-        )
+        policy_hidden_state, policy_embedding = self.rnn(policy_hidden_state, policy_rnn_input)
+        policy_embedding = self.post_torso(policy_embedding)
+        pi = self.action_head(policy_embedding, observation.action_mask)
+
+        return policy_hidden_state, pi
+
+    def get_actions(
+        self,
+        policy_hidden_state: Union[chex.Array, Sequence[chex.Array]],
+        observation_done: RNNObservation,
+        joint_trajectory: Optional["JointTrajectory"] = None,
+    ) -> Tuple[chex.Array, tfd.Distribution]:
+        """Forward pass."""
+        observation, done = observation_done
+
+        # Handle both single hidden state and list of hidden states for backward compatibility
+        if isinstance(policy_hidden_state, (list, tuple)):
+            policy_hidden_state = policy_hidden_state[0]
+
+        # TODO: Process joint_trajectory for enhanced policy computation
+        # Currently joint_trajectory is passed but not used in the computation
+        # joint_trajectory contains: observations [B, N, K, *obs_dim], actions [B, N, K, *act_dim]
+        # The last timestep observation in trajectories should match current observation.agents_view
+
+        policy_embedding = self.pre_torso(observation.agents_view)
+        policy_rnn_input = (policy_embedding, done)
+        policy_hidden_state, policy_embedding = self.rnn(policy_hidden_state, policy_rnn_input)
         policy_embedding = self.post_torso(policy_embedding)
         pi = self.action_head(policy_embedding, observation.action_mask)
 
