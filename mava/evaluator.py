@@ -244,11 +244,41 @@ def make_rec_eval_act_fn_with_traj(
         ac_in = tree.map(lambda x: x[jnp.newaxis], ac_in)  # add batch dim to obs
 
         if is_happo:
+            # Build provisional obs_history that already includes CURRENT observation so that
+            # joint_trajectory passed to the network matches observation.agents_view exactly.
+            traj_len = config.system.get("traj_len", 10)
+            n_envs = timestep.observation.agents_view.shape[0]
+            n_agents = timestep.observation.agents_view.shape[1]
+            obs_shape = timestep.observation.agents_view.shape[2:]
+
+            if traj_history is None:
+                # initialise history with zeros then set last position to current observation
+                obs_history_tmp = jnp.zeros((n_envs, n_agents, traj_len, *obs_shape))
+            else:
+                # start from previous history and roll
+                obs_history_tmp = jnp.roll(traj_history["obs_history"], -1, axis=2)
+            obs_history_tmp = obs_history_tmp.at[:, :, -1].set(timestep.observation.agents_view)
+
+            # For actions we don't know current action yet, keep previous (or zeros)
+            if traj_history is None:
+                action_history_tmp = jnp.zeros((n_envs, n_agents, traj_len))
+            else:
+                action_history_tmp = traj_history["action_history"]
+
+            # Build FULL joint trajectory (no masking) so every agent sees all agents' data
+            joint_traj = JointTrajectory(
+                observations=obs_history_tmp[
+                    jnp.newaxis, ...
+                ],  # [1, n_envs, n_agents, traj_len, *obs_dim]
+                actions=action_history_tmp[
+                    jnp.newaxis, ...
+                ],  # [1, n_envs, n_agents, traj_len, *action_dim]
+            )
+
             # Allocate action tensor based on declared action_type and action_dim
             if action_type == "discrete":
                 action = jnp.zeros((1, n_envs, n_agents), dtype=jnp.int32)
             else:
-                # continuous or vector
                 action = jnp.zeros((1, n_envs, n_agents, action_dim), dtype=jnp.float32)
             # Initialize new hidden state
             new_hidden_state = jnp.zeros_like(hidden_state, dtype=jnp.float32)
@@ -257,9 +287,9 @@ def make_rec_eval_act_fn_with_traj(
                 single_agent_ac_in = tree.map(lambda x, agent=agent: x[:, :, agent], ac_in)
                 agent_params = tree.map(lambda x, agent=agent: x[agent], params)
                 agent_hstates = tree.map(lambda x, agent=agent: x[:, agent, :], hidden_state)
-                # Run the network for this agent
+                # Run the network for this agent WITH correct joint trajectory
                 agent_policy_hidden_state, agent_actor_policy = actor_apply_fn(
-                    agent_params, agent_hstates, single_agent_ac_in, None
+                    agent_params, agent_hstates, single_agent_ac_in, joint_traj
                 )
                 new_hidden_state = new_hidden_state.at[:, agent].set(agent_policy_hidden_state)
                 # Select action
@@ -268,7 +298,7 @@ def make_rec_eval_act_fn_with_traj(
                 else:
                     action_per_agent = agent_actor_policy.sample(seed=policy_key)
                 action = action.at[:, :, agent].set(action_per_agent.squeeze(0))
-            # Update trajectory history
+            # After all agents, update trajectory history with chosen action
             new_traj_history = update_eval_trajectory_history(
                 traj_history, timestep.observation, action.squeeze(0), config
             )
@@ -339,9 +369,14 @@ def construct_ctde_joint_trajectory(
     ctde_obs_history = jnp.einsum("ij...,ej...->ei...", obs_mask, obs_history)
     ctde_action_history = jnp.einsum("ij...,ej...->ei...", action_mask, action_history)
 
+    # Add batch dimension to match RecurrentActor's expected format
+    # Shape: (n_envs, n_agents, traj_len, *dims) -> (1, n_envs, n_agents, traj_len, *dims)
+    ctde_obs_history = ctde_obs_history[jnp.newaxis, ...]
+    ctde_action_history = ctde_action_history[jnp.newaxis, ...]
+
     return JointTrajectory(
-        observations=ctde_obs_history,
-        actions=ctde_action_history,
+        observations=ctde_obs_history,  # (1, n_envs, n_agents, traj_len, *obs_shape)
+        actions=ctde_action_history,  # (1, n_envs, n_agents, traj_len, *action_shape)
     )
 
 

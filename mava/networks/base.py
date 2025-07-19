@@ -194,10 +194,8 @@ class RecurrentActor(nn.Module):
         if isinstance(policy_hidden_state, (list, tuple)):
             policy_hidden_state = policy_hidden_state[0]
 
-        # TODO: Process joint_trajectory for enhanced policy computation
-        # Currently joint_trajectory is passed but not used in the computation
-        # joint_trajectory contains: observations [B, N, K, *obs_dim], actions [B, N, K, *act_dim]
-        # The last timestep observation in trajectories should match current observation.agents_view
+        # Remove debugging block based on joint_trajectory
+        # (debug code removed)
 
         policy_embedding = self.pre_torso(observation.agents_view)
         policy_rnn_input = (policy_embedding, done)
@@ -220,10 +218,8 @@ class RecurrentActor(nn.Module):
         if isinstance(policy_hidden_state, (list, tuple)):
             policy_hidden_state = policy_hidden_state[0]
 
-        # TODO: Process joint_trajectory for enhanced policy computation
-        # Currently joint_trajectory is passed but not used in the computation
-        # joint_trajectory contains: observations [B, N, K, *obs_dim], actions [B, N, K, *act_dim]
-        # The last timestep observation in trajectories should match current observation.agents_view
+        # Remove debug block in get_actions
+        # (debug code removed)
 
         policy_embedding = self.pre_torso(observation.agents_view)
         policy_rnn_input = (policy_embedding, done)

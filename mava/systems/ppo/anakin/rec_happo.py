@@ -120,6 +120,235 @@ def construct_joint_trajectory_for_timestep(
     )
 
 
+def construct_joint_trajectory_for_agents(
+    trajectory_state: TrajectoryState, config: DictConfig
+) -> JointTrajectory:
+    """Construct joint trajectory for all agents from trajectory state.
+
+    Args:
+        trajectory_state: Current trajectory state with obs_history [B, N, traj_len, *obs_dim]
+                         and action_history [B, N, traj_len, *action_dim]
+        config: Configuration containing traj_len
+
+    Returns:
+        JointTrajectory with shape [N, 1, B, N, traj_len, *dims] for vmapped agent processing
+        Each agent sees the same complete multi-agent trajectory data
+    """
+    traj_len = config.system.get("traj_len", 10)
+    B, N = trajectory_state.obs_history.shape[:2]
+
+    # trajectory_state.obs_history: [B, N, traj_len, *obs_dim]
+    # trajectory_state.action_history: [B, N, traj_len, *action_dim]
+
+    # For HAPPO, each agent should see the same complete joint trajectory
+    # Add batch dimension and repeat for each agent
+    # [B, N, traj_len, *obs_dim] -> [1, B, N, traj_len, *obs_dim] -> [N, 1, B, N, traj_len, *obs_dim]
+    joint_obs = trajectory_state.obs_history[jnp.newaxis, ...]  # [1, B, N, traj_len, *obs_dim]
+    joint_obs = jnp.repeat(joint_obs, N, axis=0)  # [N, 1, B, N, traj_len, *obs_dim]
+
+    joint_actions = trajectory_state.action_history[
+        jnp.newaxis, ...
+    ]  # [1, B, N, traj_len, *action_dim]
+    joint_actions = jnp.repeat(joint_actions, N, axis=0)  # [N, 1, B, N, traj_len, *action_dim]
+
+    return JointTrajectory(
+        observations=joint_obs,  # [N, 1, B, N, traj_len, *obs_dim]
+        actions=joint_actions,  # [N, 1, B, N, traj_len, *action_dim]
+    )
+
+
+def construct_joint_trajectory_window_slide(
+    traj_batch: RNNPPOTransition, config: DictConfig
+) -> JointTrajectory:
+    """Construct joint trajectory using window slide for minibatch training.
+
+    For each timestep t in the rollout, constructs trajectory history of length traj_len
+    ending at timestep t: [t-traj_len+1, ..., t]
+
+    Args:
+        traj_batch: Trajectory batch with shape [T, B, N, *dims]
+        config: Configuration containing traj_len
+
+    Returns:
+        JointTrajectory with shape [T, B, N, traj_len, *dims]
+    """
+    traj_len = config.system.get("traj_len", 10)
+    T, B, N = traj_batch.obs.agents_view.shape[:3]
+    obs_shape = traj_batch.obs.agents_view.shape[3:]
+
+    # Handle action dimensions - expand if needed
+    action_slice = traj_batch.action
+    if action_slice.ndim == 2:  # [T, B] -> expand to [T, B, N]
+        action_slice = jnp.broadcast_to(action_slice[:, :, jnp.newaxis], (T, B, N))
+
+    # Efficiently create window slides using JAX operations
+    # Create indices for each window: for timestep t, indices are [max(0, t-traj_len+1), ..., t]
+    timesteps = jnp.arange(T)  # [0, 1, 2, ..., T-1]
+
+    # For each timestep t, create window indices [t-traj_len+1, ..., t]
+    # Shape: [T, traj_len]
+    window_offsets = jnp.arange(traj_len)[jnp.newaxis, :]  # [1, traj_len]: [0, 1, ..., traj_len-1]
+    window_indices = timesteps[:, jnp.newaxis] - traj_len + 1 + window_offsets  # [T, traj_len]
+
+    # Clip indices to valid range [0, T-1] and handle padding
+    window_indices = jnp.clip(window_indices, 0, T - 1)
+
+    # Create mask for valid indices (those that are >= current_timestep - traj_len + 1)
+    valid_mask = window_indices >= (timesteps[:, jnp.newaxis] - traj_len + 1)
+
+    # ------------------------------------------------------------------
+    # Zero-out cross-episode history: we only want transitions from the
+    # current episode.  Compute for every timestep how many steps have
+    # elapsed since the last done (per env, per agent). If window offset
+    # exceeds this number, we mark it invalid.
+    # ------------------------------------------------------------------
+    done_flags = traj_batch.done  # shape [T, B, N]
+
+    def _scan_fn(carry, d):
+        # carry is steps since last done
+        new_carry = jnp.where(d, 1, carry + 1)
+        return new_carry, new_carry
+
+    init_steps = jnp.zeros((B, N), dtype=jnp.int32)
+    episode_steps, _ = jax.lax.scan(_scan_fn, init_steps, done_flags)
+    # episode_steps[t] = 1 at first step after reset, then 2,3,...
+
+    # Expand to [T, traj_len, B, N] for comparison with window offsets
+    ep_steps_exp = episode_steps[:, jnp.newaxis, :, :]  # [T,1,B,N]
+    k_offsets = window_offsets[:, :, jnp.newaxis, jnp.newaxis]  # [T, traj_len,1,1]
+    cross_ep_mask = k_offsets < ep_steps_exp  # True where within episode
+
+    # Combine masks
+    valid_mask = valid_mask & cross_ep_mask
+
+    # Extract windows using advanced indexing
+    obs_windows = traj_batch.obs.agents_view[window_indices]  # [T, traj_len, B, N, *obs_dim]
+    action_windows = action_slice[window_indices]  # [T, traj_len, B, N]
+
+    # Apply padding mask - set invalid positions to zero
+    obs_pad_value = jnp.zeros((B, N) + obs_shape)
+    action_pad_value = jnp.zeros((B, N), dtype=action_slice.dtype)
+
+    # Create mask shapes that are compatible with observations and actions
+    obs_mask_shape = (valid_mask.shape[0], valid_mask.shape[1]) + (1, 1) + (1,) * len(obs_shape)
+    action_mask_shape = (valid_mask.shape[0], valid_mask.shape[1]) + (1, 1)
+
+    obs_mask = valid_mask.reshape(obs_mask_shape)
+    action_mask = valid_mask.reshape(action_mask_shape)
+
+    obs_windows = jnp.where(obs_mask, obs_windows, obs_pad_value)
+    action_windows = jnp.where(action_mask, action_windows, action_pad_value)
+
+    # Transpose to [T, B, N, traj_len, *dims] format
+    # obs_windows: [T, traj_len, B, N, *obs_dim] -> [T, B, N, traj_len, *obs_dim]
+    perm_obs = (0, 2, 3, 1) + tuple(range(4, obs_windows.ndim))
+    obs_windows = obs_windows.transpose(perm_obs)
+    # action_windows: [T, traj_len, B, N] -> [T, B, N, traj_len]
+    action_windows = action_windows.transpose(0, 2, 3, 1)
+
+    return JointTrajectory(
+        observations=obs_windows,  # [T, B, N, traj_len, *obs_dim]
+        actions=action_windows,  # [T, B, N, traj_len]
+    )
+
+
+def construct_dummy_joint_trajectory(
+    obs_shape: Tuple,
+    action_shape: Tuple,
+    batch_size: int,
+    num_agents: int,
+    traj_len: int,
+    action_dtype: jnp.dtype = jnp.int32,
+) -> JointTrajectory:
+    """Construct dummy joint trajectory for initialization and evaluation.
+
+    Args:
+        obs_shape: Shape of observation excluding batch and agent dimensions
+        action_shape: Shape of action excluding batch and agent dimensions
+        batch_size: Batch size
+        num_agents: Number of agents
+        traj_len: Trajectory length
+        action_dtype: Data type for actions
+
+    Returns:
+        Dummy JointTrajectory with appropriate shapes
+    """
+    dummy_obs = jnp.zeros((batch_size, num_agents, traj_len, *obs_shape))
+    dummy_actions = jnp.zeros((batch_size, num_agents, traj_len, *action_shape), dtype=action_dtype)
+
+    return JointTrajectory(
+        observations=dummy_obs,
+        actions=dummy_actions,
+    )
+
+
+def construct_training_joint_trajectory(
+    traj_batch: RNNPPOTransition, env_num_agents: int, config: DictConfig
+) -> JointTrajectory:
+    """Construct joint trajectory for training using each timestep's own observation.
+
+    This creates a more realistic joint trajectory where each timestep uses its actual
+    observation repeated across the trajectory length, rather than using dummy data.
+    """
+    obs_shape_full = traj_batch.obs.agents_view.shape
+    T = obs_shape_full[0]  # recurrent_chunk_size
+    B = obs_shape_full[1]  # minibatch_size
+
+    # Check if we have agent dimension
+    if len(obs_shape_full) >= 3 and obs_shape_full[2] == env_num_agents:
+        # Case: [T, B, N, *obs_dim] - we have per-agent observations
+        N = obs_shape_full[2]
+        obs_shape = obs_shape_full[3:]
+        obs_data = traj_batch.obs.agents_view  # [T, B, N, *obs_dim]
+
+    else:
+        # Case: [T, B, *obs_dim] - single agent case, expand to multi-agent
+        N = env_num_agents
+        obs_shape = obs_shape_full[2:]
+        obs_data = jnp.broadcast_to(
+            traj_batch.obs.agents_view[:, :, jnp.newaxis, :], (T, B, N, *obs_shape)
+        )
+
+    traj_len = config.system.get("traj_len", 10)
+
+    # For each timestep, repeat its observation across traj_len
+    # IMPORTANT: Keep agent-specific observations distinct
+    joint_obs = jnp.broadcast_to(
+        obs_data[:, :, :, jnp.newaxis, ...],  # [T, B, N, 1, *obs_dim]
+        (T, B, N, traj_len, *obs_shape),
+    )
+
+    # Handle actions similarly
+    action_shape_full = traj_batch.action.shape
+    action_data = traj_batch.action
+
+    if len(action_shape_full) == 2:  # [T, B] discrete actions
+        action_data = jnp.broadcast_to(
+            action_data[:, :, jnp.newaxis],  # [T, B, 1] -> [T, B, N]
+            (T, B, N),
+        )
+        joint_actions = jnp.broadcast_to(
+            action_data[:, :, :, jnp.newaxis],  # [T, B, N, 1]
+            (T, B, N, traj_len),
+        )
+    elif len(action_shape_full) == 3 and action_shape_full[2] == env_num_agents:
+        # [T, B, N] multi-agent discrete actions
+        joint_actions = jnp.broadcast_to(
+            action_data[:, :, :, jnp.newaxis],  # [T, B, N, 1]
+            (T, B, N, traj_len),
+        )
+    else:  # [T, B, N, *action_dim] multi-agent continuous actions
+        joint_actions = jnp.broadcast_to(
+            action_data[:, :, :, jnp.newaxis, ...],  # [T, B, N, 1, *action_dim]
+            (T, B, N, traj_len, *action_data.shape[3:]),
+        )
+
+    return JointTrajectory(
+        observations=joint_obs,  # [T, B, N, traj_len, *obs_dim]
+        actions=joint_actions,  # [T, B, N, traj_len] or [T, B, N, traj_len, *action_dim]
+    )
+
+
 def get_learner_fn(
     env: MarlEnv,
     apply_fns: Tuple[Tuple[RecActorApply, RecActorApply], RecCriticApply],
@@ -194,10 +423,29 @@ def get_learner_fn(
                 last_done[jnp.newaxis, :],
             )
 
-            # Construct joint trajectory from trajectory state
-            joint_traj = JointTrajectory(
-                observations=trajectory_state.obs_history[jnp.newaxis, ...],
-                actions=trajectory_state.action_history[jnp.newaxis, ...],
+            # Update trajectory state first with current observation to ensure consistency
+            # Shift history and add current observation
+            updated_obs_history = jnp.roll(trajectory_state.obs_history, -1, axis=2)
+
+            updated_obs_history = updated_obs_history.at[:, :, -1].set(
+                last_timestep.observation.agents_view
+            )
+
+            # For actions, we'll use the previous action history as we don't have current action yet
+            # This will be updated after network computation
+            updated_action_history = trajectory_state.action_history
+
+            # Create updated trajectory state with current observation
+            updated_trajectory_state = TrajectoryState(
+                obs_history=updated_obs_history,
+                action_history=updated_action_history,
+                buffer_idx=trajectory_state.buffer_idx,
+                buffer_full=trajectory_state.buffer_full,
+            )
+
+            # Construct joint trajectory from updated trajectory state for all agents
+            joint_traj_all_agents = construct_joint_trajectory_for_agents(
+                updated_trajectory_state, config
             )
 
             # ---------------- Vectorised per-agent actor forward pass ----------------
@@ -213,15 +461,15 @@ def get_learner_fn(
             done_expand = last_done[jnp.newaxis, ...]  # (1, B, N)
             done_agents = jnp.transpose(done_expand, (2, 0, 1))  # (N, 1, B)
 
-            # Vectorised apply + sampling
-            def _per_agent_apply(p, h, o, d, k):
-                new_h, pi = actor_exec_apply_fn(p, [h], (o, d), joint_traj)
+            # Vectorised apply + sampling with per-agent joint trajectory
+            def _per_agent_apply(p, h, o, d, k, jt):
+                new_h, pi = actor_exec_apply_fn(p, [h], (o, d), jt)
                 act = pi.sample(seed=k)
                 lp = pi.log_prob(act)
                 # squeeze out the leading time dimension (0) we added (size=1)
                 return new_h, act.squeeze(0), lp.squeeze(0)
 
-            vmapped_apply = jax.vmap(_per_agent_apply, in_axes=(0, 1, 0, 0, 0))
+            vmapped_apply = jax.vmap(_per_agent_apply, in_axes=(0, 1, 0, 0, 0, 0))
 
             # Run vmapped apply
             new_h_states, agent_actions, agent_log_probs = vmapped_apply(
@@ -230,6 +478,7 @@ def get_learner_fn(
                 obs_agents,
                 done_agents,
                 agent_keys,
+                joint_traj_all_agents,  # [N, 1, B, N, traj_len, *dims]
             )
 
             # Reshape back to (B, N, ...)
@@ -238,8 +487,17 @@ def get_learner_fn(
             log_probs = agent_log_probs.transpose(1, 0)  # (B, N)
 
             # We can keep the critic as is.
+            # Construct joint trajectory for critic (single trajectory, not per-agent)
+            critic_joint_traj = JointTrajectory(
+                observations=trajectory_state.obs_history[
+                    jnp.newaxis, ...
+                ],  # [1, B, N, traj_len, *obs_dim]
+                actions=trajectory_state.action_history[
+                    jnp.newaxis, ...
+                ],  # [1, B, N, traj_len, *action_dim]
+            )
             critic_hidden_state, value = critic_apply_fn(
-                params.critic_params, last_hstates.critic_hidden_state, ac_in, None
+                params.critic_params, last_hstates.critic_hidden_state, ac_in, critic_joint_traj
             )
 
             value = value.squeeze(0)
@@ -248,15 +506,12 @@ def get_learner_fn(
             env_state, timestep = jax.vmap(env.step, in_axes=(0, 0))(env_state, actions)
 
             # Update trajectory state with new observation and action
-            # Shift history and add new data
-            new_obs_history = jnp.roll(trajectory_state.obs_history, -1, axis=2)
-            # Set the last position to the current observations
-            new_obs_history = new_obs_history.at[:, :, -1].set(
-                last_timestep.observation.agents_view
-            )
-
-            new_action_history = jnp.roll(trajectory_state.action_history, -1, axis=2)
+            # Shift history and add new data (this time include the actions we just computed)
+            new_action_history = jnp.roll(updated_trajectory_state.action_history, -1, axis=2)
             new_action_history = new_action_history.at[:, :, -1].set(actions)
+
+            # The observation history is already updated with current observation
+            new_obs_history = updated_trajectory_state.obs_history
 
             # Update buffer index (capped at traj_len)
             traj_len = getattr(config.system, "traj_len", 10)
@@ -320,8 +575,12 @@ def get_learner_fn(
         # Construct joint trajectory for last value computation with proper per-timestep history
         # Use the current trajectory_state which contains the latest history
         joint_traj_last = JointTrajectory(
-            observations=trajectory_state.obs_history,  # [B, N, traj_len, *obs_dim]
-            actions=trajectory_state.action_history,  # [B, N, traj_len, *action_dim]
+            observations=trajectory_state.obs_history[
+                jnp.newaxis, ...
+            ],  # [1, B, N, traj_len, *obs_dim]
+            actions=trajectory_state.action_history[
+                jnp.newaxis, ...
+            ],  # [1, B, N, traj_len, *action_dim]
         )
 
         # Run the network.
@@ -346,6 +605,11 @@ def get_learner_fn(
                 params, opt_states, key = train_state
                 traj_batch, advantages, targets = batch_info
 
+                # Before defining actor_grad_fn, precompute full joint trajectory with all agents.
+                full_joint_traj = construct_training_joint_trajectory(
+                    traj_batch, env.num_agents, config
+                )
+
                 def _actor_loss_fn(
                     actor_params: FrozenDict,
                     actor_opt_state: OptState,
@@ -353,24 +617,16 @@ def get_learner_fn(
                     gae: chex.Array,
                     key: chex.PRNGKey,
                 ) -> Tuple:
-                    """Calculate the actor loss."""
-                    # RERUN NETWORK
+                    """Calculate the actor loss using full multi-agent joint trajectory."""
+                    # RERUN NETWORK with single-agent obs/done as before
                     obs_and_done = (traj_batch.obs, traj_batch.done)
 
-                    # Construct real joint trajectory for the last timestep in the sequence
-                    # This provides the most complete historical context for the network
-                    T = traj_batch.obs.agents_view.shape[0]  # sequence length
-                    last_timestep_idx = T - 1
-
-                    joint_traj = construct_joint_trajectory_for_timestep(
-                        traj_batch, last_timestep_idx, config
-                    )
-
+                    # Use precomputed full_joint_traj (contains all agents' data)
                     _, actor_policy = actor_train_apply_fn(
                         actor_params,
                         [traj_batch.hstates.policy_hidden_state[0]],
                         obs_and_done,
-                        joint_traj,  # Real joint trajectory with proper historical context
+                        full_joint_traj,
                     )
                     log_prob = actor_policy.log_prob(traj_batch.action)
 
@@ -403,20 +659,16 @@ def get_learner_fn(
                     # RERUN NETWORK
                     obs_and_done = (traj_batch.obs, traj_batch.done)
 
-                    # Construct real joint trajectory for the last timestep in the sequence
-                    # This provides the most complete historical context for the network
-                    T = traj_batch.obs.agents_view.shape[0]  # sequence length
-                    last_timestep_idx = T - 1
-
-                    joint_traj = construct_joint_trajectory_for_timestep(
-                        traj_batch, last_timestep_idx, config
+                    # Construct joint trajectory for minibatch training using actual timestep data
+                    joint_traj = construct_training_joint_trajectory(
+                        traj_batch, env.num_agents, config
                     )
 
                     _, value = critic_apply_fn(
                         critic_params,
                         traj_batch.hstates.critic_hidden_state[0],
                         obs_and_done,
-                        joint_traj,  # Real joint trajectory with proper historical context
+                        joint_traj,  # Joint trajectory with proper shape for minibatch
                     )
 
                     # CALCULATE VALUE LOSS
@@ -483,63 +735,19 @@ def get_learner_fn(
                     # Update advantage via importance sampling
                     agent_obs_and_done = (agent_traj.obs, agent_traj.done)
 
-                    # Construct real joint trajectory for this single agent
-                    # agent_traj contains data for single agent: obs shape [T, B, *obs_dim]
-                    T = agent_traj.obs.agents_view.shape[0]  # sequence length
-                    last_timestep_idx = T - 1
+                    # For agent update, we have two choices:
+                    # 1. Use the FULL joint trajectory with ALL agent observations (HAPPO style)
+                    # 2. Use per-agent trajectory that matches the agent_obs_and_done
 
-                    # For single agent trajectory, we need to construct joint_trajectory
-                    # But agent_traj has different structure - it's already sliced for one agent
-                    traj_len = config.system.get("traj_len", 5)
-                    B = agent_traj.obs.agents_view.shape[1]  # batch size
-                    obs_shape = agent_traj.obs.agents_view.shape[2:]  # obs dims for single agent
-
-                    # For single agent, construct history [last_timestep_idx-traj_len+1, ..., last_timestep_idx]
-                    start_idx = max(0, last_timestep_idx - traj_len + 1)
-                    end_idx = last_timestep_idx + 1
-
-                    # Extract the available history for single agent
-                    obs_slice = agent_traj.obs.agents_view[
-                        start_idx:end_idx
-                    ]  # [actual_len, B, *obs_dim]
-                    action_slice = agent_traj.action[
-                        start_idx:end_idx
-                    ]  # [actual_len, B] for single agent
-
-                    actual_len = obs_slice.shape[0]
-
-                    # Pad if necessary
-                    if actual_len < traj_len:
-                        pad_len = traj_len - actual_len
-                        obs_pad = jnp.zeros((pad_len, B, *obs_shape))
-                        action_pad = jnp.zeros((pad_len, B), dtype=action_slice.dtype)
-
-                        obs_hist = jnp.concatenate(
-                            [obs_pad, obs_slice], axis=0
-                        )  # [traj_len, B, *obs_dim]
-                        action_hist = jnp.concatenate(
-                            [action_pad, action_slice], axis=0
-                        )  # [traj_len, B]
-                    else:
-                        obs_hist = obs_slice[-traj_len:]  # Take last traj_len steps
-                        action_hist = action_slice[-traj_len:]
-
-                    # Transpose to [B, 1, traj_len, *dims] format (add agent dimension)
-                    obs_hist = obs_hist.transpose(1, 0, *range(2, obs_hist.ndim))[
-                        :, jnp.newaxis, ...
-                    ]  # [B, 1, traj_len, *obs_dim]
-                    action_hist = action_hist.transpose(1, 0)[:, jnp.newaxis, :]  # [B, 1, traj_len]
-
-                    agent_joint_traj = JointTrajectory(
-                        observations=obs_hist,
-                        actions=action_hist,
-                    )
+                    # Let's use approach 1: Full joint trajectory for proper HAPPO
+                    # Use the shared full_joint_traj; remove redundant construction.
+                    agent_joint_traj = full_joint_traj
 
                     _, actor_policy = actor_train_apply_fn(
                         actor_new_params,
                         [agent_traj.hstates.policy_hidden_state[0]],
-                        agent_obs_and_done,
-                        agent_joint_traj,
+                        agent_obs_and_done,  # Single agent obs/done for this specific agent
+                        agent_joint_traj,  # Full multi-agent joint trajectory
                     )
                     log_prob = actor_policy.log_prob(agent_traj.action)
                     ratio = jnp.exp(log_prob - agent_traj.log_prob)
@@ -771,16 +979,54 @@ def learner_setup(
 
     # initialise params and optimiser state.
 
+    # Create dummy joint trajectory for initialization
+    sample_obs = env.observation_spec.generate_value()
+    obs_shape = (
+        sample_obs.agents_view.shape[1:]
+        if hasattr(sample_obs, "agents_view")
+        else sample_obs.shape[1:]
+    )
+    sample_action = env.action_spec.generate_value()
+    action_shape = sample_action.shape[1:]
+    action_dtype = jnp.array(sample_action).dtype
+    traj_len = config.system.get("traj_len", 10)
+
+    # Create dummy joint trajectory for each agent
+    # Each agent needs the joint trajectory with proper batch dimension
+    dummy_joint_traj_single = construct_dummy_joint_trajectory(
+        obs_shape=obs_shape,
+        action_shape=action_shape,
+        batch_size=1,  # batch size for single call
+        num_agents=num_agents,
+        traj_len=traj_len,
+        action_dtype=action_dtype,
+    )
+
+    # Expand for num_envs to match expected format: (1, num_envs, num_agents, traj_len, *dims)
+    dummy_joint_traj_expanded = JointTrajectory(
+        observations=jnp.broadcast_to(
+            dummy_joint_traj_single.observations[jnp.newaxis, ...],  # Add leading dimension
+            (1, config.arch.num_envs, num_agents, traj_len, *obs_shape),
+        ),
+        actions=jnp.broadcast_to(
+            dummy_joint_traj_single.actions[jnp.newaxis, ...],  # Add leading dimension
+            (1, config.arch.num_envs, num_agents, traj_len, *action_shape),
+        ),
+    )
+
     # actor net keys has agent dim at 0,
     # init_policy_hstate has agent dim at 1,
     # init_x has agent dims at (2, 2)
+    # For joint_trajectory, we don't vmap it since each agent should see the same full trajectory
     actor_params = jax.vmap(actor_network.init, in_axes=(0, 1, (2, 2), None))(
-        actor_net_keys, init_policy_hstate, init_x, None
+        actor_net_keys, init_policy_hstate, init_x, dummy_joint_traj_expanded
     )
     actor_opt_state = jax.vmap(actor_optim.init)(actor_params)
 
     # We leave the critic as is since it is centralised.
-    critic_params = critic_network.init(critic_net_key, init_critic_hstate, init_x, None)
+    critic_params = critic_network.init(
+        critic_net_key, init_critic_hstate, init_x, dummy_joint_traj_expanded
+    )
     critic_opt_state = critic_optim.init(critic_params)
 
     # Get network apply functions and optimiser updates.
