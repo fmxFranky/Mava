@@ -129,7 +129,7 @@ def discrete_autoregressive_act_with_hidden(
             jax.nn.one_hot(action, action_dim), mode="drop"
         )
 
-    return output_action.astype(jnp.int32), output_action_log  # (B, N), (B, N)
+    return output_action.astype(jnp.int32), output_action_log, current_hidden_states  # (B, N), (B, N)
 
 
 def continuous_autoregressive_act_with_hidden(
@@ -171,4 +171,4 @@ def continuous_autoregressive_act_with_hidden(
         # Set the action for the next step
         shifted_action = shifted_action.at[:, i + 1, :].set(action, mode="drop")
 
-    return output_action, output_action_log  # (B, N, A), (B, N)
+    return output_action, output_action_log, current_hidden_states  # (B, N, A), (B, N)

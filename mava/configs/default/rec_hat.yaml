@@ -1,0 +1,11 @@
+defaults:
+  - logger: logger
+  - arch: anakin
+  - system: ppo/rec_hat
+  - network: hat_rnn # HAT算法使用专门的网络配置
+  - env: rware # [cleaner, connector, vector-connector, gigastep, lbf, mabrax, matrax, rware, smax, mpe]
+  - _self_
+
+hydra:
+  searchpath:
+    - file://mava/configs

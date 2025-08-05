@@ -19,11 +19,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import chex
 import flashbax as fbx
-from typing_extensions import NamedTuple
 import flax
 import hydra
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from colorama import Fore, Style
 from flashbax.vault import Vault
@@ -35,14 +35,15 @@ from jumanji.types import TimeStep
 from omegaconf import DictConfig, OmegaConf
 from optax._src.base import OptState
 from tqdm import tqdm
+from typing_extensions import NamedTuple
 
 from mava.evaluator import (
     get_eval_fn_with_traj,
     get_num_eval_envs,
 )
-from mava.networks.hat_network import RecurrentHATActor as Actor
 from mava.networks import RecurrentValueNet as Critic
 from mava.networks.base import ScannedRNN, ScannedRNNPerAgent
+from mava.networks.hat_network import RecurrentHATActor as Actor
 from mava.systems.ppo.types import (
     HiddenStates,
     OptStates,
@@ -64,7 +65,6 @@ from mava.utils.config import check_total_timesteps
 from mava.utils.jax_utils import unreplicate_batch_dim, unreplicate_n_dims
 from mava.utils.logger import LogEvent, MavaLogger
 from mava.utils.multistep import calculate_gae
-from mava.utils.network_utils import get_action_head
 from mava.utils.training import make_learning_rate
 from mava.wrappers.episode_metrics import get_final_step_metrics
 
@@ -362,7 +362,7 @@ def make_eval_act_fn_for_happo(
         last_done = timestep.last()[:, jnp.newaxis].repeat(n_agents, axis=-1)
 
         # 构建轨迹历史
-        traj_len = config.system.get("traj_len", 10)
+        traj_len = config.system.traj_len
 
         if traj_history is None:
             # 初始化轨迹历史
@@ -546,12 +546,12 @@ def pretrain_s2mp_single_actor(
     action_dim: int,
     n_agents: int,
     traj_len: int,
+    vault_dir: str,
+    vault_name: str,
+    vault_uid: str,
     action_space_type: str = "discrete",
     pretrain_epochs: int = 5,
     learning_rate: float = 1e-3,
-    vault_dir: Optional[str] = None,
-    vault_name: Optional[str] = None,
-    vault_uid: Optional[str] = None,
     num_training_samples: int = 1000,
     batch_size: int = 64,
     ratio_augment_size: int = 6,
@@ -1067,7 +1067,7 @@ def construct_joint_trajectory_for_agents(
         JointTrajectory with shape [N, 1, B, N, traj_len, *dims] for vmapped agent processing
         Each agent sees the same complete multi-agent trajectory data
     """
-    traj_len = config.system.get("traj_len", 10)
+    traj_len = config.system.traj_len
     B, N = trajectory_state.obs_history.shape[:2]
 
     # trajectory_state.obs_history: [B, N, traj_len, *obs_dim]
@@ -1107,7 +1107,7 @@ def construct_joint_trajectory_window_slide(
     Returns:
         JointTrajectory with shape [T, B, N, traj_len, *dims]
     """
-    traj_len = config.system.get("traj_len", 10)
+    traj_len = config.system.traj_len
     T, B, N = traj_batch.obs.agents_view.shape[:3]
     obs_shape = traj_batch.obs.agents_view.shape[3:]
 
@@ -1256,7 +1256,7 @@ def construct_training_joint_trajectory(
         JointTrajectory with shape [T, B, N, traj_len, *dims] where each timestep
         contains properly aligned observation-action history
     """
-    traj_len = config.system.get("traj_len", 10)
+    traj_len = config.system.traj_len
     obs_shape_full = traj_batch.obs.agents_view.shape
     T = obs_shape_full[0]  # recurrent_chunk_size
     B = obs_shape_full[1]  # minibatch_size
@@ -1571,7 +1571,7 @@ def get_learner_fn(
             new_obs_history = updated_trajectory_state.obs_history
 
             # Update buffer index (capped at traj_len)
-            traj_len = getattr(config.system, "traj_len", 10)
+            traj_len = config.system.traj_len
             new_buffer_idx = jnp.minimum(trajectory_state.buffer_idx + 1, traj_len)
             new_buffer_full = trajectory_state.buffer_full | (new_buffer_idx == traj_len)
 
@@ -1696,12 +1696,14 @@ def get_learner_fn(
 
                     # RecurrentHATActor.__call__ returns (obs_rep, action_log, shuffled_agent_order)
                     key, order_key = jax.random.split(key)
-                    obs_rep, action_log, shuffled_agent_order = actor_train_apply_fn(
-                        actor_params,
-                        hat_hstates,
-                        obs_and_done,
-                        full_joint_traj,
-                        order_key,
+                    s2mp_agents_view, obs_rep, action_log, shuffled_agent_order = (
+                        actor_train_apply_fn(
+                            actor_params,
+                            hat_hstates,
+                            obs_and_done,
+                            full_joint_traj,
+                            order_key,
+                        )
                     )
 
                     # Extract log probabilities for the last agent (current agent)
@@ -1727,8 +1729,185 @@ def get_learner_fn(
                     # This is an approximation since we don't have the full distribution
                     entropy = -log_prob.mean()
 
-                    total_loss = loss_actor - config.system.ent_coef * entropy
-                    return total_loss, (loss_actor, entropy)
+                    # ===== 添加Behavior Cloning损失 =====
+                    # 获取其他智能体的预测动作: action_log[:, :, :-1]
+                    # action_log shape: [bs1, bs2, num_agent, action_dim] 或 [bs1, bs2, num_agent] for discrete
+                    other_agents_pred = action_log[
+                        :, :, :-1
+                    ]  # [bs1, bs2, num_agent-1, action_dim] 或 [bs1, bs2, num_agent-1]
+
+                    # 根据shuffled_agent_order重新排列真实动作并取前N-1个智能体
+                    # full_joint_traj.last_actions shape: [bs1, bs2, num_agent, action_dim] for continuous or [bs1, bs2, num_agent] for discrete
+                    reordered_actions = full_joint_traj.last_actions[:, :, shuffled_agent_order]
+
+                    # 推断动作空间类型：根据action_log和last_actions的维度
+                    # 如果last_actions的最后一个维度大于1，则为连续动作空间
+                    is_continuous = len(full_joint_traj.last_actions.shape) > 3
+
+                    if is_continuous:
+                        # 连续动作空间：使用MSE损失
+                        other_agents_target = reordered_actions[
+                            :, :, :-1
+                        ]  # [bs1, bs2, num_agent-1, action_dim]
+
+                        # 确保预测动作和目标动作具有相同的形状
+                        pred_flat = other_agents_pred.reshape(
+                            -1, other_agents_pred.shape[-1]
+                        )  # [bs1*bs2*(num_agent-1), action_dim]
+                        target_flat = other_agents_target.reshape(
+                            -1, other_agents_target.shape[-1]
+                        )  # [bs1*bs2*(num_agent-1), action_dim]
+
+                        # 计算MSE损失
+                        mse_loss = jnp.mean(
+                            (pred_flat - target_flat) ** 2, axis=-1
+                        )  # [bs1*bs2*(num_agent-1)]
+
+                        # 创建mask: 使用last_action_masks来确定有效动作
+                        # full_joint_traj.last_action_masks shape: [bs1, bs2, num_agent, *act_mask_dim]
+                        reordered_masks = full_joint_traj.last_action_masks[
+                            :, :, shuffled_agent_order
+                        ]
+                        other_agents_masks = reordered_masks[
+                            :, :, :-1
+                        ]  # [bs1, bs2, num_agent-1, *act_mask_dim]
+
+                        # 如果mask有多个维度，取所有维度的乘积作为最终mask
+                        if other_agents_masks.ndim > 3:
+                            valid_mask = jnp.prod(other_agents_masks, axis=-1).astype(
+                                jnp.float32
+                            )  # [bs1, bs2, num_agent-1]
+                        else:
+                            valid_mask = other_agents_masks.astype(
+                                jnp.float32
+                            )  # [bs1, bs2, num_agent-1]
+
+                        valid_mask_flat = valid_mask.reshape(-1)  # [bs1*bs2*(num_agent-1)]
+
+                        # 应用mask到loss
+                        masked_loss = mse_loss * valid_mask_flat
+                        bc_loss = jnp.mean(masked_loss)
+
+                    else:  # discrete action space
+                        # 离散动作空间：使用交叉熵损失
+                        other_agents_target = reordered_actions[
+                            :, :, :-1
+                        ]  # [bs1, bs2, num_agent-1]
+
+                        # 将logits和labels重塑为适合计算的形状
+                        if (
+                            other_agents_pred.ndim == 4
+                        ):  # [bs1, bs2, num_agent-1, action_dim] - logits
+                            logits_flat = other_agents_pred.reshape(-1, other_agents_pred.shape[-1])
+                            labels_flat = other_agents_target.reshape(-1)
+
+                            # 计算交叉熵损失
+                            ce_loss_per_sample = optax.softmax_cross_entropy_with_integer_labels(
+                                logits_flat, labels_flat.astype(jnp.int32)
+                            )
+                        else:  # [bs1, bs2, num_agent-1] - log probabilities
+                            pred_flat = other_agents_pred.reshape(-1)
+                            labels_flat = other_agents_target.reshape(-1)
+
+                            # 对于log probabilities，直接使用负log似然
+                            ce_loss_per_sample = -pred_flat
+
+                        # 创建mask: 使用last_action_masks来确定有效动作
+                        # full_joint_traj.last_action_masks shape: [bs1, bs2, num_agent, *act_mask_dim]
+                        reordered_masks = full_joint_traj.last_action_masks[
+                            :, :, shuffled_agent_order
+                        ]
+                        other_agents_masks = reordered_masks[
+                            :, :, :-1
+                        ]  # [bs1, bs2, num_agent-1, *act_mask_dim]
+
+                        # 对于离散动作，如果mask有多个维度，取所有维度的乘积作为最终mask
+                        if other_agents_masks.ndim > 3:
+                            action_mask = jnp.prod(other_agents_masks, axis=-1).astype(
+                                jnp.float32
+                            )  # [bs1, bs2, num_agent-1]
+                        else:
+                            action_mask = other_agents_masks.astype(
+                                jnp.float32
+                            )  # [bs1, bs2, num_agent-1]
+
+                        action_mask_flat = action_mask.reshape(-1)
+
+                        # 应用mask到loss
+                        masked_loss = ce_loss_per_sample * action_mask_flat
+                        bc_loss = jnp.mean(masked_loss)
+
+                    # ===== 添加S2MP Prediction损失 =====
+                    # s2mp_agents_view shape: [bs1*bs2, num_agents, obs_dim]
+                    # full_joint_traj.observations[:, :, -1, :] shape: [bs1, bs2, num_agents, obs_dim]
+
+                    # 重塑full_joint_traj.observations的最后时间步以匹配s2mp_agents_view
+                    target_obs = full_joint_traj.observations[:, :, :, -1, :].reshape(
+                        -1,
+                        full_joint_traj.observations.shape[2],
+                        full_joint_traj.observations.shape[4],
+                    )
+
+                    # 计算S2MP prediction MSE loss
+                    s2mp_mse_loss = jnp.mean((s2mp_agents_view - target_obs) ** 2)
+
+                    # 获取各种loss权重
+                    bc_weight = getattr(config.system, "bc_coef", 0.0)  # 默认权重0.5
+                    s2mp_weight = getattr(config.system, "s2mp_coef", 1.0)  # 默认权重1.0
+
+                    # 计算总损失
+                    total_loss = (
+                        loss_actor
+                        - config.system.ent_coef * entropy
+                        + bc_weight * bc_loss
+                        + s2mp_weight * s2mp_mse_loss
+                    )
+
+                    # ===== 只记录当前智能体(最后一个)的loss =====
+                    current_agent_idx = shuffled_agent_order[-1]  # 当前智能体的真实ID
+
+                    # 当前智能体的PPO loss
+                    current_agent_log_prob = action_log[:, :, -1]  # 最后一个是当前智能体
+                    agent_ratio = jnp.exp(current_agent_log_prob - traj_batch.log_prob)
+                    agent_loss1 = agent_ratio * gae
+                    agent_loss2 = (
+                        jnp.clip(
+                            agent_ratio, 1.0 - config.system.clip_eps, 1.0 + config.system.clip_eps
+                        )
+                        * gae
+                    )
+                    current_agent_ppo_loss = -jnp.minimum(agent_loss1, agent_loss2).mean()
+
+                    # 当前智能体的entropy
+                    current_agent_entropy = -current_agent_log_prob.mean()
+
+                    # 当前智能体的S2MP prediction error
+                    current_agent_pred = s2mp_agents_view[:, -1, :]  # 最后一个是当前智能体
+                    current_agent_target = target_obs[:, -1, :]  # 最后一个是当前智能体
+                    current_agent_s2mp_error = jnp.mean(
+                        (current_agent_pred - current_agent_target) ** 2
+                    )
+
+                    # 汇总loss信息
+                    loss_info = {
+                        # 总体loss
+                        "total_loss": total_loss,
+                        "ppo_loss": loss_actor,
+                        "entropy": entropy,
+                        "bc_loss": bc_loss,
+                        "s2mp_mse_loss": s2mp_mse_loss,
+                        # loss权重
+                        "bc_weight": bc_weight,
+                        "s2mp_weight": s2mp_weight,
+                        "ent_coef": config.system.ent_coef,
+                        # 当前智能体的详细信息
+                        "current_agent_idx": current_agent_idx,
+                        "current_agent_ppo_loss": current_agent_ppo_loss,
+                        "current_agent_entropy": current_agent_entropy,
+                        "current_agent_s2mp_error": current_agent_s2mp_error,
+                    }
+
+                    return total_loss, loss_info
 
                 def _critic_loss_fn(
                     critic_params: FrozenDict,
@@ -1780,12 +1959,14 @@ def get_learner_fn(
                     agent_opt_state = tree.map(lambda x: x[agent_idx], agent_opt_states)
 
                     # Actor loss & gradients
-                    (actor_loss_info_per_agent, actor_grads_per_agent) = actor_grad_fn(
-                        agent_params,
-                        agent_opt_state,
-                        agent_traj,
-                        adv_sa,
-                        entropy_key,
+                    (actor_loss_value, actor_loss_info_per_agent), actor_grads_per_agent = (
+                        actor_grad_fn(
+                            agent_params,
+                            agent_opt_state,
+                            agent_traj,
+                            adv_sa,
+                            entropy_key,
+                        )
                     )
 
                     actor_grads_per_agent, _ = jax.lax.pmean(
@@ -1831,12 +2012,14 @@ def get_learner_fn(
 
                     # RecurrentHATActor returns (obs_rep, action_log, shuffled_agent_order) not distribution
                     inner_key, order_key = jax.random.split(inner_key)
-                    obs_rep, action_log, shuffled_agent_order = actor_train_apply_fn(
-                        actor_new_params,
-                        agent_hat_hstates,
-                        agent_obs_and_done,  # Single agent obs/done for this specific agent
-                        agent_joint_traj,  # Full multi-agent joint trajectory
-                        order_key,
+                    s2mp_agents_view, obs_rep, action_log, shuffled_agent_order = (
+                        actor_train_apply_fn(
+                            actor_new_params,
+                            agent_hat_hstates,
+                            agent_obs_and_done,  # Single agent obs/done for this specific agent
+                            agent_joint_traj,  # Full multi-agent joint trajectory
+                            order_key,
+                        )
                     )
                     # Extract log prob for the last agent (current agent)
                     log_prob = action_log[:, :, -1]  # [T, B]
@@ -1844,13 +2027,38 @@ def get_learner_fn(
                     adv_sa *= ratio
 
                     new_carry = (agents_params, agent_opt_states, adv_sa, inner_key)
-                    return new_carry, None
+                    # 返回agent索引及其loss信息给scan
+                    return new_carry, (agent_idx, actor_loss_info_per_agent)
 
                 # Scan over agents in shuffled order
                 init_carry = (agents_params, agent_opt_states, advantages_single_agent, key)
-                (agents_params, agent_opt_states, advantages_single_agent, key), _ = jax.lax.scan(
-                    _agent_update, init_carry, shuffled_agents
+                (
+                    (agents_params, agent_opt_states, advantages_single_agent, key),
+                    all_agent_loss_info,
+                ) = jax.lax.scan(_agent_update, init_carry, shuffled_agents)
+
+                # 合并所有agent的loss信息，直接使用JAX数组操作
+                agent_indices, loss_dicts = (
+                    all_agent_loss_info  # agent_indices: (n_agents,), loss_dicts: dict
                 )
+
+                # 重新组织为per-agent指标格式，直接使用JAX数组而不是Python列表
+                combined_actor_loss_info = {
+                    # 总体指标（取最后一个agent的值，因为这些是全局的）
+                    "total_loss": loss_dicts["total_loss"][-1],
+                    "ppo_loss": loss_dicts["ppo_loss"][-1],
+                    "entropy": loss_dicts["entropy"][-1],
+                    "bc_loss": loss_dicts["bc_loss"][-1],
+                    "s2mp_mse_loss": loss_dicts["s2mp_mse_loss"][-1],
+                    "bc_weight": loss_dicts["bc_weight"][-1],
+                    "s2mp_weight": loss_dicts["s2mp_weight"][-1],
+                    "ent_coef": loss_dicts["ent_coef"][-1],
+                    # 每个智能体的详细信息（直接使用scan收集的JAX数组）
+                    "per_agent_ppo_loss": loss_dicts["current_agent_ppo_loss"],
+                    "per_agent_entropy": loss_dicts["current_agent_entropy"],
+                    "per_agent_s2mp_error": loss_dicts["current_agent_s2mp_error"],
+                    "shuffled_agent_order": loss_dicts["current_agent_idx"],
+                }
 
                 # CALCULATE CRITIC LOSS
                 critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
@@ -1881,7 +2089,9 @@ def get_learner_fn(
                 new_opt_state = OptStates(agent_opt_states, critic_new_opt_state)
 
                 # PACK LOSS INFO
-                return (new_params, new_opt_state, key), {"total_loss": critic_loss_info[1]}
+                # 合并critic和actor的loss信息
+                all_loss_info = {"critic_loss": critic_loss_info[1], **combined_actor_loss_info}
+                return (new_params, new_opt_state, key), all_loss_info
 
             params, opt_states, init_hstates, traj_batch, advantages, targets, key = update_state
             key, shuffle_key, entropy_key = jax.random.split(key, 3)
@@ -2002,7 +2212,7 @@ def learner_setup(
 ) -> Tuple[StoreExpLearnerFn, Actor, RNNLearnerState]:
     """Initialise learner_fn, network, optimiser, environment and states."""
     # Determine number of devices: default to 1 unless override via config
-    n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
+    n_devices = min(config.arch.n_devices, len(jax.devices()))
 
     # Get number of agents.
     num_agents = env.num_agents
@@ -2013,16 +2223,6 @@ def learner_setup(
     actor_net_keys = jax.random.split(actor_net_key, num_agents)
 
     # Define network and optimisers.
-    if config.system.use_ma2e_fusion:
-        config.network.actor_network.pre_torso.layer_sizes = [
-            ls // 2 for ls in config.network.actor_network.pre_torso.layer_sizes
-        ]
-        actor_pre_torso = hydra.utils.instantiate(config.network.actor_network.pre_torso)
-    else:
-        actor_pre_torso = hydra.utils.instantiate(config.network.actor_network.pre_torso)
-    actor_post_torso = hydra.utils.instantiate(config.network.actor_network.post_torso)
-    action_head, _ = get_action_head(env.action_spec)
-    actor_action_head = hydra.utils.instantiate(action_head, action_dim=env.action_dim)
     critic_pre_torso = hydra.utils.instantiate(config.network.critic_network.pre_torso)
     critic_post_torso = hydra.utils.instantiate(config.network.critic_network.post_torso)
 
@@ -2046,38 +2246,34 @@ def learner_setup(
         obs_dim=obs_dim,
         action_dim=env.action_dim,
         n_agents=num_agents,
-        K=getattr(config.system, "traj_len", 10),
-        embed_dim=getattr(config.network, "s2mp_embed_dim", 64),
-        num_heads=getattr(config.network, "s2mp_num_heads", 4),
-        num_encoder_layers=getattr(config.network, "s2mp_num_encoder_layers", 3),
-        num_decoder_layers=getattr(config.network, "s2mp_num_decoder_layers", 3),
-        latent_tokens=getattr(config.network, "s2mp_latent_tokens", 4),
-        mlp_dim=getattr(config.network, "s2mp_mlp_dim", 128),
-        dropout_rate=getattr(config.network, "s2mp_dropout_rate", 0.0),
+        K=config.system.traj_len,
+        embed_dim=config.system.s2mp_embed_dim,
+        num_heads=config.system.s2mp_num_heads,
+        num_encoder_layers=config.system.s2mp_num_encoder_layers,
+        num_decoder_layers=config.system.s2mp_num_decoder_layers,
+        latent_tokens=config.system.s2mp_latent_tokens,
+        mlp_dim=config.system.s2mp_mlp_dim,
+        dropout_rate=config.system.s2mp_dropout_rate,
         action_space_type=action_space_type,
     )
     actor_network = Actor(
-        pre_torso=actor_pre_torso,
-        post_torso=actor_post_torso,
-        action_head=actor_action_head,
         pred_torso=s2mp_torso,
         hidden_state_dim=config.network.hidden_state_dim,
-        traj_len=getattr(config.system, "traj_len", 10),
-        scan_fn=ScannedRNN,
+        traj_len=config.system.traj_len,
         action_dim=env.action_dim,
         action_space_type=action_space_type,
         n_agents=num_agents,
-        n_encoder_block=getattr(config.network, "n_encoder_block", 1),
-        n_encoder_head=getattr(config.network, "n_encoder_head", 1),
-        n_decoder_block=getattr(config.network, "n_decoder_block", 1),
-        n_decoder_head=getattr(config.network, "n_decoder_head", 1),
+        n_encoder_block=config.system.hat_encoder_layers,
+        n_encoder_head=config.system.hat_attention_heads,
+        n_decoder_block=config.system.hat_decoder_layers,
+        n_decoder_head=config.system.hat_attention_heads,
     )
     critic_network = Critic(
         pre_torso=critic_pre_torso,
         post_torso=critic_post_torso,
         hidden_state_dim=config.network.hidden_state_dim,
         centralised_critic=True,
-        traj_len=getattr(config.system, "traj_len", 10),
+        traj_len=config.system.traj_len,
         n_agent=num_agents,
         use_transformer_torso=config.system.use_transformer_torso,
     )
@@ -2135,7 +2331,7 @@ def learner_setup(
     sample_action = env.action_spec.generate_value()
     action_shape = sample_action.shape[1:]
     action_dtype = jnp.array(sample_action).dtype
-    traj_len = config.system.get("traj_len", 10)
+    traj_len = config.system.traj_len
 
     # Create dummy joint trajectory for each agent
     # Each agent needs the joint trajectory with proper batch dimension
@@ -2224,7 +2420,7 @@ def learner_setup(
     critic_opt_state = critic_optim.init(critic_params)
 
     # 检查是否需要进行S2MP预训练
-    pretrain_s2mp_torso = getattr(config.system, "pretrain_s2mp_torso", False)
+    pretrain_s2mp_torso = config.system.pretrain_s2mp_torso
 
     if pretrain_s2mp_torso:
         single_actor_params = jax.tree.map(lambda x: jnp.copy(x[0]), actor_params)
@@ -2237,17 +2433,17 @@ def learner_setup(
             action_dim=env.action_dim,
             n_agents=num_agents,
             traj_len=traj_len,
+            vault_dir=config.system.s2mp_vault_dir,
+            vault_name=config.system.s2mp_vault_name,
+            vault_uid=config.system.s2mp_vault_uid,
             action_space_type=action_space_type,
-            pretrain_epochs=getattr(config.system, "s2mp_pretrain_epochs", 5),
-            batch_size=getattr(config.system, "s2mp_pretrain_batch_size", 512),
-            ratio_augment_size=getattr(config.system, "s2mp_ratio_augment_size", num_agents),
-            random_augment_size=getattr(config.system, "s2mp_random_augment_size", num_agents),
-            single_augment_size=getattr(config.system, "s2mp_single_augment_size", num_agents),
-            learning_rate=getattr(config.system, "s2mp_pretrain_lr", 1e-3),
-            vault_dir=getattr(config.system, "s2mp_vault_dir", None),
-            vault_name=getattr(config.system, "s2mp_vault_name", None),
-            vault_uid=getattr(config.system, "s2mp_vault_uid", None),
-            num_training_samples=getattr(config.system, "s2mp_num_training_samples", 1000),
+            pretrain_epochs=config.system.s2mp_pretrain_epochs,
+            batch_size=config.system.s2mp_pretrain_batch_size,
+            ratio_augment_size=config.system.s2mp_ratio_augment_size,
+            random_augment_size=config.system.s2mp_random_augment_size,
+            single_augment_size=config.system.s2mp_single_augment_size,
+            learning_rate=config.system.s2mp_pretrain_lr,
+            num_training_samples=config.system.s2mp_num_training_samples,
         )
 
         # 将single_actor_param中的关于pred_torso的参数数值copy到每个智能体自身的actor_network param中
@@ -2360,7 +2556,7 @@ def learner_setup(
     )
 
     # Initialize trajectory state
-    traj_len = getattr(config.system, "traj_len", 10)
+    traj_len = config.system.traj_len
     # Get observation dims from first timestep
     sample_obs = env.observation_spec.generate_value()
     if hasattr(sample_obs, "agents_view"):
@@ -2417,17 +2613,17 @@ def learner_setup(
 
 def run_experiment(_config: DictConfig) -> float:
     """Runs experiment."""
-    _config.logger.system_name = "rec_happo"
+    _config.logger.system_name = "rec_hat"
     config = copy.deepcopy(_config)
 
     # Vault configuration
-    save_vault = getattr(config.system, "save_vault", False)
-    vault_name = getattr(config.system, "vault_name", "rec_happo")
-    vault_uid = getattr(config.system, "vault_uid", None)
-    vault_save_interval = getattr(config.system, "vault_save_interval", 5)
+    save_vault = config.system.save_vault
+    vault_name = config.system.vault_name
+    vault_uid = config.system.vault_uid
+    vault_save_interval = config.system.vault_save_interval
 
     # Determine number of devices: default to 1 unless override via config
-    n_devices = min(config.arch.get("n_devices", 1), len(jax.devices()))
+    n_devices = min(config.arch.n_devices, len(jax.devices()))
 
     # Set recurrent chunk size.
     if config.system.recurrent_chunk_size is None:
@@ -2598,7 +2794,7 @@ def run_experiment(_config: DictConfig) -> float:
     eval_hs = jnp.broadcast_to(eval_hs_single[jnp.newaxis, ...], (n_devices, *eval_hs_single.shape))
 
     # Initialize trajectory history for evaluation - make sure structure matches what eval_act_fn expects
-    traj_len = getattr(config.system, "traj_len", 10)
+    traj_len = config.system.traj_len
     sample_obs = env.observation_spec.generate_value()
     obs_shape = (
         sample_obs.agents_view.shape[1:]
@@ -2670,7 +2866,89 @@ def run_experiment(_config: DictConfig) -> float:
         )
         if ep_completed:  # only log episode metrics if an episode was completed in the rollout.
             logger.log(episode_metrics, t, eval_step, LogEvent.ACT)
-        logger.log(learner_output.train_metrics, t, eval_step, LogEvent.TRAIN)
+
+        # 将向量化的train_metrics拆分为每个智能体的标量指标
+        train_metrics_raw = learner_output.train_metrics  # dict -> values 可能是标量或 (n_agents,)
+        train_metrics: Dict[str, float] = {}
+
+        # 获取agent顺序信息（用于映射索引到真实agent ID）
+        shuffled_agent_order = None
+        if "shuffled_agent_order" in train_metrics_raw:
+            shuffled_agent_order_raw = np.asarray(
+                jax.device_get(train_metrics_raw["shuffled_agent_order"])
+            )
+
+            # 正确处理多维数组：只取最后一次更新的agent顺序
+            if shuffled_agent_order_raw.ndim > 1:
+                # 如果是多维的，取最后一个"时间步"或"批次"的agent顺序
+                shuffled_agent_order = shuffled_agent_order_raw[-1]  # 取最后一个batch
+            else:
+                shuffled_agent_order = shuffled_agent_order_raw
+
+            # 确保是一维的(5,)形状
+            if shuffled_agent_order.ndim > 1:
+                shuffled_agent_order = shuffled_agent_order.flatten()
+
+            # 如果长度不等于5，只取前5个
+            if len(shuffled_agent_order) > 5:
+                shuffled_agent_order = shuffled_agent_order[:5]
+
+        for k, v in train_metrics_raw.items():
+            v_cpu = np.asarray(jax.device_get(v))  # 转到CPU numpy array
+
+            # 处理per-agent指标
+            if k.startswith("per_agent_") and v_cpu.ndim > 0:
+                metric_name = k.replace("per_agent_", "")  # 去掉前缀
+
+                # 正确处理多维per_agent数组：只取最后一次更新的值
+                if v_cpu.ndim > 1:
+                    # 如果是多维的，取最后一个"时间步"或"批次"
+                    v_cpu_processed = v_cpu.flatten()  # 首先展平
+                    if len(v_cpu_processed) >= 5:
+                        # 取最后5个值（对应5个智能体）
+                        v_cpu_processed = v_cpu_processed[-5:]
+                else:
+                    v_cpu_processed = v_cpu
+
+                # 确保数组长度正确
+                if len(v_cpu_processed) > 5:
+                    v_cpu_processed = v_cpu_processed[:5]
+                elif len(v_cpu_processed) < 5:
+                    # 用0填充到5个元素
+                    v_cpu_processed = np.pad(
+                        v_cpu_processed, (0, 5 - len(v_cpu_processed)), "constant"
+                    )
+
+                for idx in range(len(v_cpu_processed)):
+                    val = v_cpu_processed[idx]
+                    # 使用真实的agent ID（如果有的话）
+                    if shuffled_agent_order is not None and idx < len(shuffled_agent_order):
+                        agent_id_raw = shuffled_agent_order[idx]
+                        # 安全转换为Python int
+                        if np.ndim(agent_id_raw) == 0:
+                            agent_id = int(agent_id_raw.item())
+                        else:
+                            agent_id = int(agent_id_raw.flatten()[0])
+                        train_metrics[f"agent_{agent_id}_{metric_name}"] = float(
+                            val.item() if np.ndim(val) == 0 else float(val)
+                        )
+                    else:
+                        train_metrics[f"agent_{idx}_{metric_name}"] = float(
+                            val.item() if np.ndim(val) == 0 else float(val)
+                        )
+            elif k == "shuffled_agent_order":
+                # 跳过agent顺序信息，不记录到TensorBoard
+                continue
+            elif v_cpu.ndim == 0:
+                train_metrics[k] = float(v_cpu.item())
+            else:
+                # 对于其他多维指标，尝试平均或取第一个元素
+                for idx in range(v_cpu.shape[0]):
+                    val = v_cpu[idx]
+                    train_metrics[f"agent_{idx}_{k}"] = float(
+                        val.item() if np.ndim(val) == 0 else np.mean(val)
+                    )
+        logger.log(train_metrics, t, eval_step, LogEvent.TRAIN)
 
         # Prepare for evaluation.
         start_time = time.time()
@@ -2760,7 +3038,7 @@ def run_experiment(_config: DictConfig) -> float:
 
 @hydra.main(
     config_path="../../../configs/default",
-    config_name="rec_happo.yaml",
+    config_name="rec_hat.yaml",
     version_base="1.2",
 )
 def hydra_entry_point(cfg: DictConfig) -> float:

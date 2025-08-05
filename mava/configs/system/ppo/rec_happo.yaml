@@ -39,3 +39,23 @@ save_vault: False # Whether to save experience data to vault
 vault_name: "rec_happo" # Name of the vault for experience storage
 vault_uid: ~ # Unique identifier for vault. If unset, uses timestamp
 vault_save_interval: 5 # How often to save buffer to vault (in evaluation steps) 
+
+s2mp_embed_dim: 64
+s2mp_num_heads: 1
+s2mp_num_encoder_layers: 1
+s2mp_num_decoder_layers: 1
+s2mp_latent_tokens: 8
+s2mp_mlp_dim: 256
+s2mp_dropout_rate: 0.0
+
+pretrain_s2mp_torso: False
+s2mp_pretrain_epochs: 1
+s2mp_pretrain_batch_size: 128
+s2mp_pretrain_lr: 1e-3
+s2mp_num_training_samples: 1000
+s2mp_vault_dir: "/home/mxfeng/aaai25_projects/Mava/vaults"
+s2mp_vault_name: "rec_happo"
+s2mp_vault_uid: "20250704045911"
+
+use_ma2e_fusion: False
+use_transformer_torso: True

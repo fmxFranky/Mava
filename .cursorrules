@@ -1,0 +1,5 @@
+- 不要尝试写测试脚本和changelog readme
+
+- allways response in Chinese
+
+- 运行terminal命令前应该激活python环境，在当前repo中是source .venv/bin/activate

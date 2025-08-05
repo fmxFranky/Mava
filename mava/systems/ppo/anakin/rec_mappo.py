@@ -142,6 +142,8 @@ def construct_joint_trajectory_for_timestep(
     return JointTrajectory(
         observations=obs_hist,  # [B, N, traj_len, *obs_dim]
         actions=action_hist,  # [B, N, traj_len]
+        last_actions=None,  # Not available during env interaction
+        last_action_masks=None,  # Would need additional parameters to provide
     )
 
 
@@ -202,6 +204,8 @@ def get_learner_fn(
             joint_traj = JointTrajectory(
                 observations=trajectory_state.obs_history[jnp.newaxis, ...],
                 actions=trajectory_state.action_history[jnp.newaxis, ...],
+                last_actions=None,  # Not available during env interaction
+                last_action_masks=None,  # Not available during env interaction - only current agent's mask available
             )
 
             # Run the network with trajectory information
@@ -262,6 +266,8 @@ def get_learner_fn(
         joint_traj_last = JointTrajectory(
             observations=trajectory_state.obs_history,  # [B, N, traj_len, *obs_dim]
             actions=trajectory_state.action_history,  # [B, N, traj_len, *action_dim]
+            last_actions=None,  # Not available during env interaction
+            last_action_masks=None,  # Not available during env interaction - only current agent's mask available
         )
 
         # Run the network.

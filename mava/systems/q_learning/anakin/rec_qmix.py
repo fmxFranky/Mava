@@ -305,6 +305,8 @@ def make_update_fns(
         joint_traj = JointTrajectory(
             observations=obs_history,  # [B, N, K, *obs_dim]
             actions=action_history,  # [B, N, K]
+            last_actions=None,  # Not available during env interaction
+            last_action_masks=None,  # Historical data, no current action_mask available
         )
         return joint_traj
 
@@ -332,6 +334,8 @@ def make_update_fns(
         joint_traj = JointTrajectory(
             observations=joint_traj.observations[jnp.newaxis, ...],
             actions=joint_traj.actions[jnp.newaxis, ...],
+            last_actions=None,  # Not available during env interaction
+            last_action_masks=None,  # Not available during env interaction - only current agent's mask available
         )
 
         next_hidden_state, eps_greedy_dist = q_net.apply(

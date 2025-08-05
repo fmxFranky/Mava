@@ -346,7 +346,7 @@ class RecurrentMultiAgentTransformer(nn.Module):
             observation.agents_view, hidden_states.encoder
         )
 
-        output_action, output_action_log = self.act_function(
+        output_action, output_action_log, new_dec_hidden = self.act_function(
             decoder=self.decoder,
             obs_rep=obs_rep,
             action_dim=self.action_dim,
@@ -359,8 +359,8 @@ class RecurrentMultiAgentTransformer(nn.Module):
         # The decoder hidden states would be updated in the act_function
         new_hidden_states = MATHiddenStates(
             encoder=new_enc_hidden,
-            decoder_self=hidden_states.decoder_self,  # Updated in act_function
-            decoder_cross=hidden_states.decoder_cross,  # Updated in act_function
+            decoder_self=new_dec_hidden[0],  # Updated in act_function
+            decoder_cross=new_dec_hidden[1],  # Updated in act_function
         )
 
         return output_action, output_action_log, value, new_hidden_states

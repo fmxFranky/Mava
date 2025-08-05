@@ -1,0 +1,33 @@
+# ---HAT Recurrent Structure Networks---
+# HAT (Hierarchical Attention Transformer) 网络配置
+# 使用RecurrentHATActor，仅需要pred_torso(S2MP)、encoder和decoder
+
+hidden_state_dim: 128 # The size of the RNN hiddenstate for each agent.
+
+# HAT Critic Network Configuration  
+# 保持与HAPPO相似的critic结构
+critic_network:
+  pre_torso:
+    _target_: mava.networks.torsos.MLPTorso
+    layer_sizes: [128]
+    use_layer_norm: True
+    activation: relu
+  
+  post_torso:
+    _target_: mava.networks.torsos.MLPTorso
+    layer_sizes: [128]
+    use_layer_norm: True
+    activation: relu
+
+# Q-Network Configuration (for compatibility)
+q_network:
+  pre_torso:
+    _target_: mava.networks.torsos.MLPTorso
+    layer_sizes: [128]
+    use_layer_norm: False
+    activation: relu
+  post_torso:
+    _target_: mava.networks.torsos.MLPTorso
+    layer_sizes: [128]
+    use_layer_norm: False
+    activation: relu

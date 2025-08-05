@@ -19,7 +19,6 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import chex
 import flashbax as fbx
-from typing_extensions import NamedTuple
 import flax
 import hydra
 import jax
@@ -31,7 +30,6 @@ from flax.core.frozen_dict import FrozenDict
 from gymnasium.spaces import Discrete, MultiDiscrete
 from jax import tree
 from jumanji.specs import DiscreteArray, MultiDiscreteArray  # Local import to avoid circular deps
-from jumanji.types import TimeStep
 from omegaconf import DictConfig, OmegaConf
 from optax._src.base import OptState
 from tqdm import tqdm
@@ -39,8 +37,9 @@ from tqdm import tqdm
 from mava.evaluator import (
     get_eval_fn_with_traj,
     get_num_eval_envs,
+    make_rec_eval_act_fn_with_traj,
 )
-from mava.networks.hat_network import RecurrentHATActor as Actor
+from mava.networks import RecurrentActor as Actor
 from mava.networks import RecurrentValueNet as Critic
 from mava.networks.base import ScannedRNN, ScannedRNNPerAgent
 from mava.systems.ppo.types import (
@@ -67,17 +66,6 @@ from mava.utils.multistep import calculate_gae
 from mava.utils.network_utils import get_action_head
 from mava.utils.training import make_learning_rate
 from mava.wrappers.episode_metrics import get_final_step_metrics
-
-
-# Define HATHiddenStates for RecurrentHATActor (3 policy hidden states + 1 critic hidden state)
-class HATHiddenStates(NamedTuple):
-    """Hidden states for RecurrentHATActor with encoder and decoder states."""
-
-    encoder_hidden_state: chex.Array
-    decoder_self_hidden_state: chex.Array
-    decoder_cross_hidden_state: chex.Array
-    critic_hidden_state: chex.Array
-
 
 # Define the learner function type that returns experience data
 StoreExpLearnerFn = Callable[
@@ -299,200 +287,6 @@ def generate_single_agent_mask(
     # 重新排列为 (augment_size * batch_size, n_agents)
     masks = all_masks.reshape(-1, n_agents)
     return masks
-
-
-def make_eval_act_fn_for_happo(
-    actor_apply_fn: RecActorApply,
-    config: DictConfig,
-    action_type: str = "discrete",
-    action_dim: Optional[int] = None,
-) -> Callable[[FrozenDict, TimeStep, chex.PRNGKey, Dict], Tuple[chex.Array, Dict]]:
-    """为RecurrentHATActor创建专门的评估函数，参考_env_step实现。
-
-    Args:
-        actor_apply_fn: RecurrentHATActor的apply函数
-        config: 系统配置
-        action_type: 动作类型 ("discrete" 或 "continuous")
-        action_dim: 动作维度（连续动作空间需要）
-
-    Returns:
-        符合EvalActFn协议的评估函数
-    """
-
-    _hidden_state = "hidden_state"
-    _trajectory_history = "trajectory_history"
-
-    @jax.jit
-    def eval_act_fn(
-        params: FrozenDict, timestep: TimeStep, key: chex.PRNGKey, actor_state: Dict
-    ) -> Tuple[chex.Array, Dict]:
-        """评估函数，使用RecurrentHATActor与环境交互。（已JIT编译）"""
-
-        # 从actor_state中获取hidden states和trajectory history
-        hidden_state = actor_state[_hidden_state]  # [n_devices, batch, agents, hidden_dim]
-        traj_history = actor_state.get(_trajectory_history, None)
-
-        # 对于RecurrentHATActor，我们需要将统一的hidden_state拆分为三个组件
-        # 检查hidden_state维度并进行拆分
-        if len(hidden_state.shape) == 4:
-            n_devices, batch_size, n_agents_dim, hidden_dim = hidden_state.shape
-            # 每个组件占hidden_dim的1/3，如果不能整除则尽可能平均分配
-            component_dim = hidden_dim // 3
-            remaining = hidden_dim % 3
-
-            # 分配维度：第一个组件可能多一点维度
-            dim1 = component_dim + (1 if remaining > 0 else 0)
-            dim2 = component_dim + (1 if remaining > 1 else 0)
-
-            encoder_hidden_state = hidden_state[..., :dim1]
-            decoder_self_hidden_state = hidden_state[..., dim1 : dim1 + dim2]
-            decoder_cross_hidden_state = hidden_state[..., dim1 + dim2 :]
-        else:
-            # 如果维度不符合预期，直接复制使用
-            encoder_hidden_state = hidden_state
-            decoder_self_hidden_state = hidden_state
-            decoder_cross_hidden_state = hidden_state
-
-        # 获取环境和智能体信息
-        n_envs = timestep.observation.agents_view.shape[0]
-        n_agents = timestep.observation.agents_view.shape[1]
-        obs_shape = timestep.observation.agents_view.shape[2:]
-
-        # 构建done标志
-        last_done = timestep.last()[:, jnp.newaxis].repeat(n_agents, axis=-1)
-
-        # 构建轨迹历史
-        traj_len = config.system.get("traj_len", 10)
-
-        if traj_history is None:
-            # 初始化轨迹历史
-            obs_history = jnp.zeros((n_envs, n_agents, traj_len, *obs_shape))
-            if action_type == "discrete":
-                action_history = jnp.zeros((n_envs, n_agents, traj_len), dtype=jnp.int32)
-            else:
-                action_history = jnp.zeros(
-                    (n_envs, n_agents, traj_len, action_dim), dtype=jnp.float32
-                )
-        else:
-            # 滚动历史并添加当前观察
-            obs_history = jnp.roll(traj_history["obs_history"], -1, axis=2)
-            action_history = traj_history["action_history"]
-
-        # 将当前观察添加到历史的最后位置
-        obs_history = obs_history.at[:, :, -1].set(timestep.observation.agents_view)
-
-        # 构建TrajectoryState（模拟的，用于构建joint_trajectory）
-        trajectory_state = TrajectoryState(
-            obs_history=obs_history,
-            action_history=action_history,
-            buffer_idx=jnp.array([traj_len - 1]),  # 模拟已填满
-            buffer_full=jnp.array([True]),
-        )
-
-        # 构建joint trajectory（缓存以避免重复计算）
-        joint_traj_all_agents = construct_joint_trajectory_for_agents(trajectory_state, config)
-
-        # 准备网络输入
-        ac_in = (
-            timestep.observation,
-            last_done,
-        )
-        ac_in = tree.map(lambda x: x[jnp.newaxis], ac_in)  # 添加batch维度
-
-        # 初始化动作张量（log_probs将从网络输出中获取）
-        if action_type == "discrete":
-            actions = jnp.zeros((n_envs, n_agents), dtype=jnp.int32)
-        else:
-            actions = jnp.zeros((n_envs, n_agents, action_dim), dtype=jnp.float32)
-
-        # 初始化新的hidden states
-        new_encoder_hidden_states = jnp.zeros_like(encoder_hidden_state, dtype=jnp.float32)
-        new_decoder_self_hidden_states = jnp.zeros_like(
-            decoder_self_hidden_state, dtype=jnp.float32
-        )
-        new_decoder_cross_hidden_states = jnp.zeros_like(
-            decoder_cross_hidden_state, dtype=jnp.float32
-        )
-
-        # 向量化处理所有智能体（类似训练时的做法）
-        # 分割所有智能体的随机种子
-        key, policy_key = jax.random.split(key)
-        agent_keys = jax.random.split(policy_key, n_agents)
-
-        # 准备所有智能体的观察和done标志
-        obs_agents = tree.map(
-            lambda x: jnp.transpose(x, (2, 0, 1) + tuple(range(3, x.ndim))),  # (N, 1, B, ...)
-            ac_in[0],
-        )
-        # ac_in[1] 的形状是 (1, B, N)，转置为 (N, 1, B)
-        done_agents = jnp.transpose(ac_in[1], (2, 0, 1))  # (N, 1, B)
-
-        # 向量化应用函数，处理所有智能体
-        def _per_agent_apply(p, h_enc, h_self, h_cross, o, d, k, jt):
-            # RecurrentHATActor需要3个hidden states
-            hstates = [h_enc, h_self, h_cross]
-            new_hstates, action, action_log = actor_apply_fn(p, hstates, (o, d), jt, key=k)
-            # 提取最后一个智能体（当前智能体）的动作
-            # action: [1, B, N, action_dim], 我们需要最后一个智能体
-            act = action[:, :, -1]  # [1, B, action_dim] 或 [1, B]
-            # 去掉时间维度（size=1）
-            return new_hstates, act.squeeze(0)  # [B, action_dim] 或 [B]
-
-        vmapped_apply = jax.vmap(_per_agent_apply, in_axes=(0, 1, 1, 1, 0, 0, 0, 0))
-
-        # 运行向量化的apply函数
-        new_h_states, agent_actions = vmapped_apply(
-            params,  # 按智能体索引的参数
-            encoder_hidden_state,  # [B, N, H] -> vmap在智能体轴=1上
-            decoder_self_hidden_state,  # [B, N, H] -> vmap在智能体轴=1上
-            decoder_cross_hidden_state,  # [B, N, H] -> vmap在智能体轴=1上
-            obs_agents,  # [N, 1, B, ...]
-            done_agents,  # [N, 1, B]
-            agent_keys,  # [N, ...]
-            joint_traj_all_agents,  # [N, 1, B, N, traj_len, *dims]
-        )
-
-        # 重新整理hidden states和actions
-        # new_h_states是一个包含3个hidden state列表，每个元素形状为[N, B, H]
-        new_encoder_hidden_states = new_h_states[0].transpose(1, 0, 2)  # (B, N, H)
-        new_decoder_self_hidden_states = new_h_states[1].transpose(1, 0, 2)  # (B, N, H)
-        new_decoder_cross_hidden_states = new_h_states[2].transpose(1, 0, 2)  # (B, N, H)
-
-        # 重新整理actions: [N, B, ...] -> [B, N, ...]
-        actions = agent_actions.transpose(1, 0, *range(2, agent_actions.ndim))  # (B, N, ...)
-
-        # 更新动作历史，为下一步准备
-        new_action_history = jnp.roll(action_history, -1, axis=2)
-        new_action_history = new_action_history.at[:, :, -1].set(actions)
-
-        # 将三个hidden state组件重新组合为统一的hidden_state
-        # 确保与原始hidden_state的维度匹配
-        if (
-            len(hidden_state.shape) == 4
-            and new_encoder_hidden_states.shape[-1] != hidden_state.shape[-1]
-        ):
-            # 沿着最后一维连接三个组件
-            new_hidden_state = jnp.concatenate(
-                [
-                    new_encoder_hidden_states,
-                    new_decoder_self_hidden_states,
-                    new_decoder_cross_hidden_states,
-                ],
-                axis=-1,
-            )
-        else:
-            # 如果组件大小相同或维度不匹配，使用encoder hidden state作为代表
-            new_hidden_state = new_encoder_hidden_states
-
-        # 构建新的actor_state
-        new_actor_state = {
-            _hidden_state: new_hidden_state,
-            _trajectory_history: {"obs_history": obs_history, "action_history": new_action_history},
-        }
-
-        return actions, new_actor_state
-
-    return eval_act_fn
 
 
 def build_s2mp_training_dataset(data, buffer, num_samples, action_space_type, action_dim, traj_len):
@@ -1053,6 +847,56 @@ def pretrain_s2mp_single_actor(
     return current_params
 
 
+def construct_joint_trajectory_for_timestep(
+    traj_batch: RNNPPOTransition, timestep_idx: int, config: DictConfig
+) -> JointTrajectory:
+    """Construct joint trajectory for a specific timestep with proper history.
+
+    This function constructs the trajectory history for timestep_idx,
+    where the history includes [timestep_idx-traj_len+1, ..., timestep_idx].
+    """
+    traj_len = config.system.get("traj_len", 5)
+    T, B, N = traj_batch.obs.agents_view.shape[:3]
+    obs_shape = traj_batch.obs.agents_view.shape[3:]
+
+    # For timestep_idx, we want history [timestep_idx-traj_len+1, ..., timestep_idx]
+    start_idx = max(0, timestep_idx - traj_len + 1)
+    end_idx = timestep_idx + 1
+
+    # Extract the available history
+    obs_slice = traj_batch.obs.agents_view[start_idx:end_idx]  # [actual_len, B, N, *obs_dim]
+    action_slice = traj_batch.action[start_idx:end_idx]  # [actual_len, B, N] or [actual_len, B]
+
+    actual_len = obs_slice.shape[0]
+
+    # Handle action dimensions - expand if needed
+    if action_slice.ndim == 2:  # [actual_len, B] -> expand to [actual_len, B, N]
+        action_slice = jnp.broadcast_to(action_slice[:, :, jnp.newaxis], (actual_len, B, N))
+
+    # Pad if necessary (when timestep_idx < traj_len-1)
+    if actual_len < traj_len:
+        pad_len = traj_len - actual_len
+        obs_pad = jnp.zeros((pad_len, B, N, *obs_shape))
+        action_pad = jnp.zeros((pad_len, B, N), dtype=action_slice.dtype)
+
+        obs_hist = jnp.concatenate([obs_pad, obs_slice], axis=0)  # [traj_len, B, N, *obs_dim]
+        action_hist = jnp.concatenate([action_pad, action_slice], axis=0)  # [traj_len, B, N]
+    else:
+        obs_hist = obs_slice[-traj_len:]  # Take last traj_len steps
+        action_hist = action_slice[-traj_len:]
+
+    # Transpose to [B, N, traj_len, *dims] format expected by networks
+    obs_hist = obs_hist.transpose(1, 2, 0, *range(3, obs_hist.ndim))  # [B, N, traj_len, *obs_dim]
+    action_hist = action_hist.transpose(1, 2, 0)  # [B, N, traj_len]
+
+    return JointTrajectory(
+        observations=obs_hist,  # [B, N, traj_len, *obs_dim]
+        actions=action_hist,  # [B, N, traj_len]
+        last_actions=None,  # Not available during env interaction
+        last_action_masks=None,  # Would need additional parameters to provide
+    )
+
+
 def construct_joint_trajectory_for_agents(
     trajectory_state: TrajectoryState, config: DictConfig
 ) -> JointTrajectory:
@@ -1087,8 +931,8 @@ def construct_joint_trajectory_for_agents(
     return JointTrajectory(
         observations=joint_obs,  # [N, 1, B, N, traj_len, *obs_dim]
         actions=joint_actions,  # [N, 1, B, N, traj_len, *action_dim]
-        last_actions=None,
-        last_action_masks=None,
+        last_actions=None,  # Not available during env interaction
+        last_action_masks=None,  # Not available during env interaction - only current agent's mask available
     )
 
 
@@ -1145,7 +989,7 @@ def construct_joint_trajectory_window_slide(
         return new_carry, new_carry
 
     init_steps = jnp.zeros((B, N), dtype=jnp.int32)
-    _, episode_steps = jax.lax.scan(_scan_fn, init_steps, done_flags)
+    episode_steps, _ = jax.lax.scan(_scan_fn, init_steps, done_flags)
     # episode_steps[t] = 1 at first step after reset, then 2,3,...
 
     # Expand to [T, traj_len, B, N] for comparison with window offsets
@@ -1196,7 +1040,6 @@ def construct_dummy_joint_trajectory(
     num_agents: int,
     traj_len: int,
     action_dtype: jnp.dtype = jnp.int32,
-    action_dim: int = 10,
 ) -> JointTrajectory:
     """Construct dummy joint trajectory for initialization and evaluation.
 
@@ -1207,56 +1050,29 @@ def construct_dummy_joint_trajectory(
         num_agents: Number of agents
         traj_len: Trajectory length
         action_dtype: Data type for actions
-        action_dim: Action dimension for creating action masks
 
     Returns:
-        Dummy JointTrajectory with appropriate shapes including last_actions and last_action_masks
+        Dummy JointTrajectory with appropriate shapes
     """
     dummy_obs = jnp.zeros((batch_size, num_agents, traj_len, *obs_shape))
     dummy_actions = jnp.zeros((batch_size, num_agents, traj_len, *action_shape), dtype=action_dtype)
 
-    # Create dummy last_actions and last_action_masks for RecurrentHATActor
-    dummy_last_actions = jnp.zeros((batch_size, num_agents, *action_shape), dtype=action_dtype)
-
-    # Create dummy action masks - assume all actions are valid for initialization
-    # For discrete actions, action_mask typically has shape [num_agents, action_dim]
-    # For continuous actions, we might not need action masks or they could be all True
-    if len(action_shape) == 0:  # Discrete actions (scalar)
-        dummy_last_action_masks = jnp.ones((batch_size, num_agents, action_dim), dtype=bool)
-    else:  # Continuous actions
-        # For continuous actions, we may not need masks or they could be all True
-        dummy_last_action_masks = None
-
     return JointTrajectory(
         observations=dummy_obs,
         actions=dummy_actions,
-        last_actions=dummy_last_actions,
-        last_action_masks=dummy_last_action_masks,
+        last_actions=None,  # Dummy trajectory
+        last_action_masks=None,  # Dummy trajectory
     )
 
 
 def construct_training_joint_trajectory(
     traj_batch: RNNPPOTransition, env_num_agents: int, config: DictConfig
 ) -> JointTrajectory:
-    """Construct joint trajectory for training using window slide with proper obs-action alignment.
+    """Construct joint trajectory for training using each timestep's own observation.
 
-    For each timestep t in the rollout, constructs trajectory history of length traj_len
-    ending at timestep t: [t-traj_len+1, ..., t]
-
-    Key principle: obs[t] corresponds to action[t-1] to maintain proper temporal alignment:
-    - obs[t]: current observation at timestep t
-    - action[t-1]: action taken in previous timestep that led to obs[t]
-
-    Args:
-        traj_batch: Trajectory batch with shape [T, B, N, *dims]
-        env_num_agents: Number of agents in environment
-        config: Configuration containing traj_len
-
-    Returns:
-        JointTrajectory with shape [T, B, N, traj_len, *dims] where each timestep
-        contains properly aligned observation-action history
+    This creates a more realistic joint trajectory where each timestep uses its actual
+    observation repeated across the trajectory length, rather than using dummy data.
     """
-    traj_len = config.system.get("traj_len", 10)
     obs_shape_full = traj_batch.obs.agents_view.shape
     T = obs_shape_full[0]  # recurrent_chunk_size
     B = obs_shape_full[1]  # minibatch_size
@@ -1267,6 +1083,7 @@ def construct_training_joint_trajectory(
         N = obs_shape_full[2]
         obs_shape = obs_shape_full[3:]
         obs_data = traj_batch.obs.agents_view  # [T, B, N, *obs_dim]
+
     else:
         # Case: [T, B, *obs_dim] - single agent case, expand to multi-agent
         N = env_num_agents
@@ -1275,114 +1092,54 @@ def construct_training_joint_trajectory(
             traj_batch.obs.agents_view[:, :, jnp.newaxis, :], (T, B, N, *obs_shape)
         )
 
-    # Handle action dimensions - expand if needed
+    traj_len = config.system.get("traj_len", 10)
+
+    # For each timestep, repeat its observation across traj_len
+    # IMPORTANT: Keep agent-specific observations distinct
+    joint_obs = jnp.broadcast_to(
+        obs_data[:, :, :, jnp.newaxis, ...],  # [T, B, N, 1, *obs_dim]
+        (T, B, N, traj_len, *obs_shape),
+    )
+
+    # Handle actions similarly
+    action_shape_full = traj_batch.action.shape
     action_data = traj_batch.action
-    if action_data.ndim == 2:  # [T, B] -> expand to [T, B, N]
-        action_data = jnp.broadcast_to(action_data[:, :, jnp.newaxis], (T, B, N))
 
-    # Create window indices for observations
-    timesteps = jnp.arange(T)  # [0, 1, 2, ..., T-1]
-    # [1, traj_len]: [0, 1, ..., traj_len-1]
-    window_offsets = jnp.arange(traj_len)[jnp.newaxis, :]
-    # [T, traj_len]
-    obs_window_indices = timesteps[:, jnp.newaxis] - traj_len + 1 + window_offsets
+    if len(action_shape_full) == 2:  # [T, B] discrete actions
+        action_data = jnp.broadcast_to(
+            action_data[:, :, jnp.newaxis],  # [T, B, 1] -> [T, B, N]
+            (T, B, N),
+        )
+        joint_actions = jnp.broadcast_to(
+            action_data[:, :, :, jnp.newaxis],  # [T, B, N, 1]
+            (T, B, N, traj_len),
+        )
+    elif len(action_shape_full) == 3 and action_shape_full[2] == env_num_agents:
+        # [T, B, N] multi-agent discrete actions
+        joint_actions = jnp.broadcast_to(
+            action_data[:, :, :, jnp.newaxis],  # [T, B, N, 1]
+            (T, B, N, traj_len),
+        )
+    else:  # [T, B, N, *action_dim] multi-agent continuous actions
+        joint_actions = jnp.broadcast_to(
+            action_data[:, :, :, jnp.newaxis, ...],  # [T, B, N, 1, *action_dim]
+            (T, B, N, traj_len, *action_data.shape[3:]),
+        )
 
-    # Create window indices for actions (shifted by -1 for proper alignment)
-    # action[t-1] corresponds to obs[t]
-    action_window_indices = obs_window_indices - 1  # [T, traj_len]
-
-    # Clip indices to valid range
-    obs_window_indices = jnp.clip(obs_window_indices, 0, T - 1)
-    action_window_indices = jnp.clip(action_window_indices, 0, T - 1)
-
-    # Create masks for valid indices
-    obs_valid_mask = obs_window_indices >= (timesteps[:, jnp.newaxis] - traj_len + 1)
-    # actions start from timestep 0
-    action_valid_mask = action_window_indices >= (timesteps[:, jnp.newaxis] - traj_len)
-
-    # Handle cross-episode contamination
-    done_flags = traj_batch.done  # Check actual shape
-
-    # Handle different possible shapes of done_flags
-    if done_flags.ndim == 2:  # [T, B] - single agent or broadcasted
-        # Expand to [T, B, N] if needed
-        done_flags = jnp.broadcast_to(done_flags[:, :, jnp.newaxis], (T, B, N))
-    elif done_flags.ndim == 3:  # [T, B, N] - multi-agent
-        pass  # Already correct shape
-    else:
-        raise ValueError(f"Unexpected done_flags shape: {done_flags.shape}")
-
-    def _scan_fn(carry, d):
-        # carry is steps since last done
-        new_carry = jnp.where(d, 1, carry + 1)
-        return new_carry, new_carry
-
-    init_steps = jnp.zeros((B, N), dtype=jnp.int32)
-    _, episode_steps = jax.lax.scan(_scan_fn, init_steps, done_flags)
-    # episode_steps[t] = 1 at first step after reset, then 2,3,...
-
-    # Create cross-episode masks
-    ep_steps_exp = episode_steps[:, jnp.newaxis, :, :]  # [T,1,B,N]
-    obs_k_offsets = window_offsets[:, :, jnp.newaxis, jnp.newaxis]  # [T, traj_len,1,1]
-    obs_cross_ep_mask = obs_k_offsets < ep_steps_exp  # True where within episode
-
-    # For actions, we need to consider that action_window_indices are shifted
-    action_k_offsets = obs_k_offsets + 1  # shift by 1 since actions are t-1
-    action_cross_ep_mask = action_k_offsets <= ep_steps_exp
-
-    # Combine masks - broadcast temporal masks to full shape
-    obs_valid_mask_expanded = obs_valid_mask[:, :, jnp.newaxis, jnp.newaxis]  # [T, traj_len, 1, 1]
-    action_valid_mask_expanded = action_valid_mask[
-        :, :, jnp.newaxis, jnp.newaxis
-    ]  # [T, traj_len, 1, 1]
-
-    obs_combined_mask = obs_valid_mask_expanded & obs_cross_ep_mask  # [T, traj_len, B, N]
-    action_combined_mask = action_valid_mask_expanded & action_cross_ep_mask  # [T, traj_len, B, N]
-
-    # Extract windows using advanced indexing
-    obs_windows = obs_data[obs_window_indices]  # [T, traj_len, B, N, *obs_dim]
-    action_windows = action_data[action_window_indices]  # [T, traj_len, B, N, ...]
-
-    # Apply padding masks
-    obs_pad_value = jnp.zeros((B, N, *obs_shape))
-    action_pad_shape = (B, N, *action_data.shape[3:]) if action_data.ndim > 3 else (B, N)
-    action_pad_value = jnp.zeros(action_pad_shape, dtype=action_data.dtype)
-
-    # Create mask shapes that are compatible with observations and actions
-    if len(obs_shape) > 0:
-        obs_mask_shape = obs_combined_mask.shape + (1,) * len(
-            obs_shape
-        )  # [T, traj_len, B, N, *obs_dim]
-        obs_mask = obs_combined_mask.reshape(obs_mask_shape)
-    else:
-        obs_mask = obs_combined_mask
-
-    if action_data.ndim > 3:
-        action_mask_shape = action_combined_mask.shape + (1,) * (action_data.ndim - 3)
-        action_mask = action_combined_mask.reshape(action_mask_shape)
-    else:
-        action_mask = action_combined_mask
-
-    obs_windows = jnp.where(obs_mask, obs_windows, obs_pad_value)
-    action_windows = jnp.where(action_mask, action_windows, action_pad_value)
-
-    # Transpose to [T, B, N, traj_len, *dims] format
-    # obs_windows: [T, traj_len, B, N, *obs_dim] -> [T, B, N, traj_len, *obs_dim]
-    perm_obs = (0, 2, 3, 1, *tuple(range(4, obs_windows.ndim)))
-    obs_windows = obs_windows.transpose(perm_obs)
-
-    # action_windows: [T, traj_len, B, N, ...] -> [T, B, N, traj_len, ...]
-    if action_windows.ndim == 4:  # discrete actions [T, traj_len, B, N]
-        action_windows = action_windows.transpose(0, 2, 3, 1)
-    else:  # continuous actions [T, traj_len, B, N, *action_dim]
-        perm_action = (0, 2, 3, 1, *tuple(range(4, action_windows.ndim)))
-        action_windows = action_windows.transpose(perm_action)
+    # Extract last actions from the last timestep [T-1, B, N, *action_dim] -> [B, N, *action_dim]
+    last_actions = action_data[-1]  # [B, N, *action_dim]
+    
+    # Extract last action masks from the last timestep observation
+    # traj_batch.obs should have action_mask field with shape [T, B, N, *action_mask_dim]
+    last_action_masks = None
+    if hasattr(traj_batch.obs, 'action_mask') and traj_batch.obs.action_mask is not None:
+        last_action_masks = traj_batch.obs.action_mask[-1]  # [B, N, *action_mask_dim]
 
     return JointTrajectory(
-        observations=obs_windows,  # [T, B, N, traj_len, *obs_dim]
-        actions=action_windows,  # [T, B, N, traj_len, *action_dim]
-        last_actions=traj_batch.action,  # [T, B, N] or [T, B, N, *action_dim]
-        last_action_masks=traj_batch.obs.action_mask,  # [T, B, N, *action_mask_dim] or None
+        observations=joint_obs,  # [T, B, N, traj_len, *obs_dim]
+        actions=joint_actions,  # [T, B, N, traj_len] or [T, B, N, traj_len, *action_dim]
+        last_actions=last_actions,  # [B, N, *action_dim]
+        last_action_masks=last_action_masks,  # [B, N, *action_mask_dim] or None
     )
 
 
@@ -1449,15 +1206,8 @@ def get_learner_fn(
                 )
 
             log_probs = jnp.zeros((config.arch.num_envs, env.num_agents))
-            # Initialize hidden states for RecurrentHATActor (3 hidden states)
-            encoder_hidden_states = jnp.zeros_like(
-                last_hstates.encoder_hidden_state, dtype=jnp.float32
-            )
-            decoder_self_hidden_states = jnp.zeros_like(
-                last_hstates.decoder_self_hidden_state, dtype=jnp.float32
-            )
-            decoder_cross_hidden_states = jnp.zeros_like(
-                last_hstates.decoder_cross_hidden_state, dtype=jnp.float32
+            policy_hidden_states = jnp.zeros_like(
+                last_hstates.policy_hidden_state, dtype=jnp.float32
             )
 
             # Add a batch dimension to the observation.
@@ -1506,38 +1256,27 @@ def get_learner_fn(
             done_agents = jnp.transpose(done_expand, (2, 0, 1))  # (N, 1, B)
 
             # Vectorised apply + sampling with per-agent joint trajectory
-            def _per_agent_apply(p, h_enc, h_self, h_cross, o, d, k, jt):
-                # RecurrentHATActor expects 3 hidden states
-                hstates = [h_enc, h_self, h_cross]
-                new_hstates, action, action_log = actor_exec_apply_fn(p, hstates, (o, d), jt, key=k)
-                # Extract the last agent's action and log prob (RecurrentHATActor returns multi-agent results)
-                # action: [1, B, N, action_dim], action_log: [1, B, N]
-                # We want the last agent (current agent)
-                act = action[:, :, -1]  # [1, B, action_dim]
-                lp = action_log[:, :, -1]  # [1, B]
+            def _per_agent_apply(p, h, o, d, k, jt):
+                new_h, pi = actor_exec_apply_fn(p, [h], (o, d), jt, key=k)
+                act = pi.sample(seed=k)
+                lp = pi.log_prob(act)
                 # squeeze out the leading time dimension (0) we added (size=1)
-                return new_hstates, act.squeeze(0), lp.squeeze(0)
+                return new_h, act.squeeze(0), lp.squeeze(0)
 
-            vmapped_apply = jax.vmap(_per_agent_apply, in_axes=(0, 1, 1, 1, 0, 0, 0, 0))
+            vmapped_apply = jax.vmap(_per_agent_apply, in_axes=(0, 1, 0, 0, 0, 0))
 
-            # Run vmapped apply - extract 3 hidden states from last_hstates
+            # Run vmapped apply
             new_h_states, agent_actions, agent_log_probs = vmapped_apply(
                 params.actor_params,
-                last_hstates.encoder_hidden_state,  # [B, N, H]  -> vmap agent axis=1
-                last_hstates.decoder_self_hidden_state,  # [B, N, H]  -> vmap agent axis=1
-                last_hstates.decoder_cross_hidden_state,  # [B, N, H]  -> vmap agent axis=1
+                last_hstates.policy_hidden_state,  # [B, N, H]  -> vmap agent axis=1
                 obs_agents,
                 done_agents,
                 agent_keys,
                 joint_traj_all_agents,  # [N, 1, B, N, traj_len, *dims]
             )
 
-            # new_h_states is now a list of [encoder, decoder_self, decoder_cross] for each agent
             # Reshape back to (B, N, ...)
-            # new_h_states[0] is encoder states for all agents [N, B, H]
-            encoder_hidden_states = new_h_states[0].transpose(1, 0, 2)  # (B, N, H)
-            decoder_self_hidden_states = new_h_states[1].transpose(1, 0, 2)  # (B, N, H)
-            decoder_cross_hidden_states = new_h_states[2].transpose(1, 0, 2)  # (B, N, H)
+            policy_hidden_states = new_h_states.transpose(1, 0, 2)  # (B, N, H)
             actions = agent_actions.transpose(1, 0, *range(2, agent_actions.ndim))  # (B, N, ...)
             log_probs = agent_log_probs.transpose(1, 0)  # (B, N)
 
@@ -1587,12 +1326,7 @@ def get_learner_fn(
             # traj_batch later on in the trainer.
             done = timestep.last().repeat(env.num_agents).reshape(config.arch.num_envs, -1)
 
-            hstates = HATHiddenStates(
-                encoder_hidden_states,
-                decoder_self_hidden_states,
-                decoder_cross_hidden_states,
-                critic_hidden_state,
-            )
+            hstates = HiddenStates(policy_hidden_states, critic_hidden_state)
             transition = RNNPPOTransition(
                 last_done,
                 actions,
@@ -1659,6 +1393,8 @@ def get_learner_fn(
             traj_batch, last_val, last_done, config.system.gamma, config.system.gae_lambda
         )
 
+        
+
         def _update_epoch(update_state: Tuple, _: Any) -> Tuple:
             """Update the network for a single epoch."""
 
@@ -1681,33 +1417,18 @@ def get_learner_fn(
                     gae: chex.Array,
                     key: chex.PRNGKey,
                 ) -> Tuple:
-                    """Calculate the actor loss using RecurrentHATActor output."""
-                    # RERUN NETWORK with HAT hidden states
+                    """Calculate the actor loss using full multi-agent joint trajectory."""
+                    # RERUN NETWORK with single-agent obs/done as before
                     obs_and_done = (traj_batch.obs, traj_batch.done)
 
-                    # RecurrentHATActor needs 3 hidden states
-                    # Use the actual hidden states from the trajectory batch, taking the first timestep
-                    # and reshaping to the minibatch dimensions
-                    hat_hstates = [
-                        traj_batch.hstates.encoder_hidden_state,  # [B, H] - first timestep
-                        traj_batch.hstates.decoder_self_hidden_state,  # [B, H] - first timestep
-                        traj_batch.hstates.decoder_cross_hidden_state,  # [B, H] - first timestep
-                    ]
-
-                    # RecurrentHATActor.__call__ returns (obs_rep, action_log, shuffled_agent_order)
-                    key, order_key = jax.random.split(key)
-                    obs_rep, action_log, shuffled_agent_order = actor_train_apply_fn(
+                    # Use precomputed full_joint_traj (contains all agents' data)
+                    _, actor_policy = actor_train_apply_fn(
                         actor_params,
-                        hat_hstates,
+                        [traj_batch.hstates.policy_hidden_state[0]],
                         obs_and_done,
                         full_joint_traj,
-                        order_key,
                     )
-
-                    # Extract log probabilities for the last agent (current agent)
-                    # action_log shape: [T, B, N, action_dim] or [T, B, N] for discrete
-                    # We want the last agent (current agent)
-                    log_prob = action_log[:, :, -1]  # [T, B]
+                    log_prob = actor_policy.log_prob(traj_batch.action)
 
                     ratio = jnp.exp(log_prob - traj_batch.log_prob)
                     gae = (gae - gae.mean()) / (gae.std() + 1e-8)
@@ -1722,10 +1443,8 @@ def get_learner_fn(
                     )
                     loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
                     loss_actor = loss_actor.mean()
-
-                    # For entropy, we compute it from the action log probabilities
-                    # This is an approximation since we don't have the full distribution
-                    entropy = -log_prob.mean()
+                    # The seed will be used in the TanhTransformedDistribution:
+                    entropy = actor_policy.entropy(seed=key).mean()
 
                     total_loss = loss_actor - config.system.ent_coef * entropy
                     return total_loss, (loss_actor, entropy)
@@ -1740,12 +1459,15 @@ def get_learner_fn(
                     # RERUN NETWORK
                     obs_and_done = (traj_batch.obs, traj_batch.done)
 
-                    # Reuse the precomputed joint trajectory instead of reconstructing
+                    # Construct joint trajectory for minibatch training using actual timestep data
+                    joint_traj = construct_training_joint_trajectory(
+                        traj_batch, env.num_agents, config
+                    )
                     _, value = critic_apply_fn(
                         critic_params,
                         traj_batch.hstates.critic_hidden_state,
                         obs_and_done,
-                        full_joint_traj,  # Reuse precomputed joint trajectory
+                        joint_traj,  # Joint trajectory with proper shape for minibatch
                     )
 
                     # CALCULATE VALUE LOSS
@@ -1820,26 +1542,13 @@ def get_learner_fn(
                     # Use the shared full_joint_traj; remove redundant construction.
                     agent_joint_traj = full_joint_traj
 
-                    # RecurrentHATActor needs 3 hidden states
-                    # Use the actual hidden states from the agent trajectory, taking the first timestep
-                    # agent_traj contains data for a specific agent, so we use its hidden states
-                    agent_hat_hstates = [
-                        agent_traj.hstates.encoder_hidden_state,  # [B, H] - first timestep for this agent
-                        agent_traj.hstates.decoder_self_hidden_state,  # [B, H] - first timestep for this agent
-                        agent_traj.hstates.decoder_cross_hidden_state,  # [B, H] - first timestep for this agent
-                    ]
-
-                    # RecurrentHATActor returns (obs_rep, action_log, shuffled_agent_order) not distribution
-                    inner_key, order_key = jax.random.split(inner_key)
-                    obs_rep, action_log, shuffled_agent_order = actor_train_apply_fn(
+                    _, actor_policy = actor_train_apply_fn(
                         actor_new_params,
-                        agent_hat_hstates,
+                        [agent_traj.hstates.policy_hidden_state[0]],
                         agent_obs_and_done,  # Single agent obs/done for this specific agent
                         agent_joint_traj,  # Full multi-agent joint trajectory
-                        order_key,
                     )
-                    # Extract log prob for the last agent (current agent)
-                    log_prob = action_log[:, :, -1]  # [T, B]
+                    log_prob = actor_policy.log_prob(agent_traj.action)
                     ratio = jnp.exp(log_prob - agent_traj.log_prob)
                     adv_sa *= ratio
 
@@ -1911,6 +1620,7 @@ def get_learner_fn(
             )
 
             minibatches = tree.map(lambda x: jnp.swapaxes(x, 1, 0), reshaped_batch)
+
 
             # UPDATE MINIBATCHES
             (params, opt_states, entropy_key), loss_info = jax.lax.scan(
@@ -2063,14 +1773,8 @@ def learner_setup(
         pred_torso=s2mp_torso,
         hidden_state_dim=config.network.hidden_state_dim,
         traj_len=getattr(config.system, "traj_len", 10),
-        scan_fn=ScannedRNN,
-        action_dim=env.action_dim,
-        action_space_type=action_space_type,
-        n_agents=num_agents,
-        n_encoder_block=getattr(config.network, "n_encoder_block", 1),
-        n_encoder_head=getattr(config.network, "n_encoder_head", 1),
-        n_decoder_block=getattr(config.network, "n_decoder_block", 1),
-        n_decoder_head=getattr(config.network, "n_decoder_head", 1),
+        use_ma2e_fusion=config.system.use_ma2e_fusion,
+        scan_fn=ScannedRNNPerAgent,
     )
     critic_network = Critic(
         pre_torso=critic_pre_torso,
@@ -2096,7 +1800,6 @@ def learner_setup(
 
     # Initialise observation with obs of all agents.
     init_obs = env.observation_spec.generate_value()
-    init_obs = init_obs._replace(agents_view=init_obs.agents_view.at[:, 0].set(1))
     init_obs = tree.map(
         lambda x: jnp.repeat(x[jnp.newaxis, ...], config.arch.num_envs, axis=0),
         init_obs,
@@ -2105,20 +1808,12 @@ def learner_setup(
     init_done = jnp.zeros((1, config.arch.num_envs, num_agents), dtype=bool)
     init_x = (init_obs, init_done)
 
-    # Initialise hidden states for RecurrentHATActor (3 policy hidden states)
-    # Encoder hidden state: [B, N, H]
-    init_encoder_hstate = ScannedRNN.initialize_carry(
-        (config.arch.num_envs, num_agents), config.network.hidden_state_dim
+    # Initialise hidden states.
+    init_policy_hstate = ScannedRNNPerAgent.initialize_carry(
+        config.arch.num_envs, config.network.hidden_state_dim
     )
-    # Decoder self-attention hidden state: [B, N, H]
-    init_decoder_self_hstate = ScannedRNN.initialize_carry(
-        (config.arch.num_envs, num_agents), config.network.hidden_state_dim
-    )
-    # Decoder cross-attention hidden state: [B, N, H]
-    init_decoder_cross_hstate = ScannedRNN.initialize_carry(
-        (config.arch.num_envs, num_agents), config.network.hidden_state_dim
-    )
-    # Critic hidden state
+    # # Duplicate the hidden states across the number of agents.
+    init_policy_hstate = jnp.repeat(init_policy_hstate[:, jnp.newaxis, :], num_agents, axis=1)
     init_critic_hstate = ScannedRNN.initialize_carry(
         (config.arch.num_envs, num_agents), config.network.hidden_state_dim
     )
@@ -2146,25 +1841,9 @@ def learner_setup(
         num_agents=num_agents,
         traj_len=traj_len,
         action_dtype=action_dtype,
-        action_dim=env.action_dim,
     )
 
     # Expand for num_envs to match expected format: (1, num_envs, num_agents, traj_len, *dims)
-    expanded_last_actions = None
-    expanded_last_action_masks = None
-
-    if dummy_joint_traj_single.last_actions is not None:
-        expanded_last_actions = jnp.broadcast_to(
-            dummy_joint_traj_single.last_actions[jnp.newaxis, ...],  # Add leading dimension
-            (1, config.arch.num_envs, num_agents, *action_shape),
-        )
-
-    if dummy_joint_traj_single.last_action_masks is not None:
-        expanded_last_action_masks = jnp.broadcast_to(
-            dummy_joint_traj_single.last_action_masks[jnp.newaxis, ...],  # Add leading dimension
-            (1, config.arch.num_envs, num_agents, env.action_dim),
-        )
-
     dummy_joint_traj_expanded = JointTrajectory(
         observations=jnp.broadcast_to(
             dummy_joint_traj_single.observations[jnp.newaxis, ...],  # Add leading dimension
@@ -2174,47 +1853,17 @@ def learner_setup(
             dummy_joint_traj_single.actions[jnp.newaxis, ...],  # Add leading dimension
             (1, config.arch.num_envs, num_agents, traj_len, *action_shape),
         ),
-        last_actions=expanded_last_actions,
-        last_action_masks=expanded_last_action_masks,
+        last_actions=None,  # Dummy trajectory for initialization
+        last_action_masks=None,  # Dummy trajectory for initialization
     )
 
-    # Initialize actor parameters manually for each agent
-    # RecurrentHATActor needs 3 hidden states per agent
-    actor_params_list = []
-    for agent_idx in range(num_agents):
-        # Extract hidden states for this agent
-        agent_encoder_hstate = init_encoder_hstate[:, agent_idx, :]  # [num_envs, hidden_dim]
-        agent_decoder_self_hstate = init_decoder_self_hstate[
-            :, agent_idx, :
-        ]  # [num_envs, hidden_dim]
-        agent_decoder_cross_hstate = init_decoder_cross_hstate[
-            :, agent_idx, :
-        ]  # [num_envs, hidden_dim]
-
-        # Create list of hidden states for this agent
-        agent_hstates = [
-            agent_encoder_hstate,
-            agent_decoder_self_hstate,
-            agent_decoder_cross_hstate,
-        ]
-
-        # Extract observation/done for this agent from init_x
-        agent_obs = tree.map(lambda x: x[:, :, agent_idx], init_x[0])  # obs for agent
-        agent_done = init_x[1][:, :, agent_idx]  # done for agent
-        agent_init_x = (agent_obs, agent_done)
-
-        # Initialize actor parameters for this agent
-        agent_params = actor_network.init(
-            actor_net_keys[agent_idx],
-            agent_hstates,
-            agent_init_x,
-            dummy_joint_traj_expanded,
-            jax.random.PRNGKey(agent_idx),
-        )
-        actor_params_list.append(agent_params)
-
-    # Stack agent parameters to create the final actor_params
-    actor_params = jax.tree.map(lambda *args: jnp.stack(args, axis=0), *actor_params_list)
+    # actor net keys has agent dim at 0,
+    # init_policy_hstate has agent dim at 1,
+    # init_x has agent dims at (2, 2)
+    # For joint_trajectory, we don't vmap it since each agent should see the same full trajectory
+    actor_params = jax.vmap(actor_network.init, in_axes=(0, 1, (2, 2), None))(
+        actor_net_keys, init_policy_hstate, init_x, dummy_joint_traj_expanded
+    )
     actor_opt_state = jax.vmap(actor_optim.init)(actor_params)
 
     # We leave the critic as is since it is centralised.
@@ -2321,9 +1970,7 @@ def learner_setup(
 
     # Pack params and initial states.
     params = Params(actor_params, critic_params)
-    hstates = HATHiddenStates(
-        init_encoder_hstate, init_decoder_self_hstate, init_decoder_cross_hstate, init_critic_hstate
-    )
+    hstates = HiddenStates(init_policy_hstate, init_critic_hstate)
 
     # Load model from checkpoint if specified.
     if config.logger.checkpointing.load_model:
@@ -2472,8 +2119,8 @@ def run_experiment(_config: DictConfig) -> float:
     actor_exec_apply_fn = lambda params, *args, **kwargs: actor_network.apply(
         params, *args, method=actor_network.get_actions, **kwargs
     )
-    eval_act_fn = make_eval_act_fn_for_happo(
-        actor_exec_apply_fn, config, action_type=action_type, action_dim=action_dim
+    eval_act_fn = make_rec_eval_act_fn_with_traj(
+        actor_exec_apply_fn, config, is_happo=True, action_type=action_type, action_dim=action_dim
     )
     evaluator = get_eval_fn_with_traj(eval_env, eval_act_fn, config, absolute_metric=False)
 

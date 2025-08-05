@@ -222,6 +222,9 @@ class S2MPNetwork(nn.Module):
         agent_mask: chex.Array,  # (B, N) 1=keep, 0=mask
         rngs: dict = None,  # 兼容统一接口，可选参数
     ) -> chex.Array:  # -> reconstructed obs (B, N, K, obs_dim)
+        # print(f"[s2mp]obs_seq: {obs_seq.shape}")
+        # print(f"[s2mp]action_seq: {action_seq.shape}")
+        # print(f"[s2mp]agent_mask: {agent_mask.shape}")
         B, N, K = obs_seq.shape[:3]  # 动态获取序列长度
 
         # 1) Encode observations & actions

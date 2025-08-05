@@ -1,0 +1,82 @@
+# --- Defaults REC-HAT (Hierarchical Attention Transformer) ---
+total_timesteps: ~ # Set the total environment steps.
+# If unspecified, it's derived from num_updates; otherwise, num_updates adjusts based on this value.
+num_updates: 244 # Number of updates
+seed: 42
+
+# --- Agent observations ---
+add_agent_id: True
+
+# --- RL hyperparameters ---
+actor_lr: 5e-3 # Learning rate for actor network
+critic_lr: 2.5e-4 # Learning rate for critic network
+update_batch_size: 2 # Number of vectorised gradient updates per device.
+rollout_length: 128 # Number of environment steps per vectorised environment.
+ppo_epochs: 8 # Number of ppo epochs per training data batch.
+num_minibatches: 2 # Number of minibatches per ppo epoch.
+gamma: 0.99 # Discounting factor.
+gae_lambda: 0.95 # Lambda value for GAE computation.
+clip_eps: 0.2 # Clipping value for PPO updates and value function.
+ent_coef: 0.01 # Entropy regularisation term for loss function.
+vf_coef: 0.5 # Critic weight in
+max_grad_norm: 1.0 # Maximum norm of the gradients for a weight update.
+decay_learning_rates: False # Whether learning rates should be linearly decayed during training.
+
+# --- Trajectory parameters ---
+traj_len: 10 # Length of trajectory history to maintain for each agent
+
+# --- Recurrent hyperparameters ---
+recurrent_chunk_size: ~ # The size of the chunks in which the recurrent sequences are divided during the training process.
+# If unspecified, the rollout length is used as the chunk size which means that the recurrent sequences are not divided.
+
+# --- HAT specific parameters ---
+# HAT (Hierarchical Attention Transformer) uses per-agent parameters with hierarchical attention mechanism
+# Inherits from HAPPO but uses transformer-based actor with encoder-decoder structure
+# The centralized critic is shared while each actor uses hierarchical attention
+
+# --- HAT Actor Architecture ---
+# HAT uses RecurrentHATActor with S2MP, RecurrentEncoder, and RecurrentDecoder
+hat_encoder_layers: 1 # Number of transformer encoder layers
+hat_decoder_layers: 1 # Number of transformer decoder layers  
+hat_attention_heads: 1 # Number of attention heads in transformer
+
+# --- Vault settings for experience storage ---
+save_vault: False # Whether to save experience data to vault for S2MP pretraining
+vault_name: "rec_hat" # Name of the vault for experience storage
+vault_uid: ~ # Unique identifier for vault. If unset, uses timestamp
+vault_save_interval: 5 # How often to save buffer to vault (in evaluation steps) 
+
+# --- S2MP (Sequence-to-Masked-Pretraining) Network Configuration ---
+# S2MP网络用于预训练HAT算法的观测重建能力
+s2mp_embed_dim: 128 # S2MP网络的嵌入维度
+s2mp_num_heads: 1 # S2MP Transformer的注意力头数
+s2mp_num_encoder_layers: 2 # S2MP编码器层数
+s2mp_num_decoder_layers: 2 # S2MP解码器层数
+s2mp_latent_tokens: 4 # S2MP潜在token数量
+s2mp_mlp_dim: 128 # S2MP网络中MLP的隐藏层维度
+s2mp_dropout_rate: 0.0 # S2MP网络的dropout率
+
+# --- S2MP Pretraining Configuration ---
+pretrain_s2mp_torso: True # Whether to pretrain S2MP network before main training
+s2mp_pretrain_epochs: 3 # Number of epochs for S2MP pretraining
+s2mp_pretrain_batch_size: 64 # Batch size for S2MP pretraining
+s2mp_pretrain_lr: 5e-3 # Learning rate for S2MP pretraining
+s2mp_num_training_samples: 10000 # Number of training samples for S2MP pretraining
+s2mp_grad_clip_norm: 1.0 # Gradient clipping norm for S2MP pretraining
+
+# --- S2MP Data Augmentation Configuration ---
+s2mp_ratio_augment_size: 6 # Number of ratio-based mask augmentations
+s2mp_random_augment_size: 5 # Number of random agent mask augmentations  
+s2mp_single_augment_size: 5 # Number of single agent mask augmentations
+s2mp_mask_ratio: 0.75 # Ratio of agents to mask during S2MP training
+
+# --- Pretrain Vault Configuration ---
+s2mp_vault_dir: "/home/mxfeng/aaai25_projects/Mava/vaults"
+s2mp_vault_name: "rec_happo"
+s2mp_vault_uid: "20250704045911"
+
+# --- Advanced Features ---
+use_transformer_torso: False # Whether to use transformer-based torso architecture
+
+# --- Cross-Episode Contamination Prevention ---
+remove_cross_episode_contamination: True # Remove cross-episode contamination in trajectory construction

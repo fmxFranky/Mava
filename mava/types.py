@@ -155,10 +155,14 @@ class JointTrajectory(NamedTuple):
 
     observations: historical observations of all agents [B, N, K, *obs_dim]
     actions: historical actions of all agents [B, N, K, *act_dim]
+    last_actions: actual actions taken at the last timestep [B, N, *act_dim] (None during env interaction/evaluation, available during training)
+    last_action_masks: action masks for all agents at the last timestep [B, N, *act_mask_dim] (None during env interaction/evaluation, available during training)
     """
 
     observations: chex.Array  # [B, N, K, *obs_dim]
     actions: chex.Array  # [B, N, K, *act_dim]
+    last_actions: Optional[chex.Array]  # [B, N, *act_dim]
+    last_action_masks: Optional[chex.Array]  # [B, N, *act_mask_dim]
 
 
 RNNObservation: TypeAlias = Tuple[Observation, Done]

@@ -207,7 +207,7 @@ def make_rec_eval_act_fn(actor_apply_fn: RecActorApply, config: DictConfig) -> E
         ac_in = (timestep.observation, last_done)
         ac_in = tree.map(lambda x: x[jnp.newaxis], ac_in)  # add batch dim to obs
 
-        hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, None)
+        hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, None, key=key)
         action = pi.mode() if config.arch.evaluation_greedy else pi.sample(seed=key)
         return action.squeeze(0), {_hidden_state: hidden_state}
 
@@ -273,6 +273,8 @@ def make_rec_eval_act_fn_with_traj(
                 actions=action_history_tmp[
                     jnp.newaxis, ...
                 ],  # [1, n_envs, n_agents, traj_len, *action_dim]
+                last_actions=None,  # Not available during evaluation
+                last_action_masks=None,  # Not available during evaluation - only current agent's mask available
             )
 
             # Allocate action tensor based on declared action_type and action_dim
@@ -289,7 +291,7 @@ def make_rec_eval_act_fn_with_traj(
                 agent_hstates = tree.map(lambda x, agent=agent: x[:, agent, :], hidden_state)
                 # Run the network for this agent WITH correct joint trajectory
                 agent_policy_hidden_state, agent_actor_policy = actor_apply_fn(
-                    agent_params, agent_hstates, single_agent_ac_in, joint_traj
+                    agent_params, agent_hstates, single_agent_ac_in, joint_traj, key=policy_key
                 )
                 new_hidden_state = new_hidden_state.at[:, agent].set(agent_policy_hidden_state)
                 # Select action
@@ -309,7 +311,7 @@ def make_rec_eval_act_fn_with_traj(
         else:
             # standard CTDE evaluation
             joint_traj = construct_ctde_joint_trajectory(timestep.observation, traj_history, config)
-            hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, joint_traj)
+            hidden_state, pi = actor_apply_fn(params, hidden_state, ac_in, joint_traj, key=key)
             action = pi.mode() if config.arch.evaluation_greedy else pi.sample(seed=key)
             new_traj_history = update_eval_trajectory_history(
                 traj_history, timestep.observation, action.squeeze(0), config
@@ -377,6 +379,8 @@ def construct_ctde_joint_trajectory(
     return JointTrajectory(
         observations=ctde_obs_history,  # (1, n_envs, n_agents, traj_len, *obs_shape)
         actions=ctde_action_history,  # (1, n_envs, n_agents, traj_len, *action_shape)
+        last_actions=None,  # Not available during evaluation
+        last_action_masks=None,  # Not available during evaluation - only partial agent masks available
     )
 
 
