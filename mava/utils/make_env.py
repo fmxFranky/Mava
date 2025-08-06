@@ -107,11 +107,11 @@ def add_extra_wrappers(
         train_env = AgentIDWrapper(train_env)
         eval_env = AgentIDWrapper(eval_env)
 
-    if is_gnn_based(config):
-        # Get the graph wrapper from registry or use default GraphWrapper
-        graph_wrapper = registry[config.env.env_name].get("graph_wrapper", GraphWrapper)
-        train_env = graph_wrapper(train_env)
-        eval_env = graph_wrapper(eval_env)
+    # if is_gnn_based(config):
+    #     # Get the graph wrapper from registry or use default GraphWrapper
+    #     graph_wrapper = registry[config.env.env_name].get("graph_wrapper", GraphWrapper)
+    #     train_env = graph_wrapper(train_env)
+    #     eval_env = graph_wrapper(eval_env)
 
     train_env = AutoResetWrapper(train_env)
     train_env = RecordEpisodeMetrics(train_env)

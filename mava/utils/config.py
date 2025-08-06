@@ -20,9 +20,9 @@ from omegaconf import DictConfig
 
 def base_sebulba_checks(config: DictConfig) -> None:
     """Checks that the given config does not have conflicting values."""
-    assert (
-        config.system.num_updates > config.arch.num_evaluation
-    ), "Number of updates per evaluation must be less than total number of updates."
+    assert config.system.num_updates > config.arch.num_evaluation, (
+        "Number of updates per evaluation must be less than total number of updates."
+    )
     config.system.num_updates_per_eval = config.system.num_updates // config.arch.num_evaluation
 
     assert config.arch.num_envs % len(config.arch.learner_device_ids) == 0, (

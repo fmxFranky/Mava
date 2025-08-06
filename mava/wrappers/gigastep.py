@@ -62,12 +62,12 @@ class GigastepWrapper(Wrapper):
         self.num_agents = env.n_agents_team1
         self.action_dim = env.n_actions
         super().__init__(env)
-        assert (
-            env.discrete_actions
-        ), "Only discrete action spaces are currently supported for Gigastep environments"
-        assert (
-            env._obs_type == "vector"
-        ), "Only Vector observations are currently supported for Gigastep environments"
+        assert env.discrete_actions, (
+            "Only discrete action spaces are currently supported for Gigastep environments"
+        )
+        assert env._obs_type == "vector", (
+            "Only Vector observations are currently supported for Gigastep environments"
+        )
 
         self._env: GigastepEnv
 

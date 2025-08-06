@@ -1,3 +1,7 @@
+papers/
+NOS-MAT-pytorch/
+PMAT/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
